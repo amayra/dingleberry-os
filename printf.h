@@ -2,6 +2,7 @@
 #define LIN_PRINTF_H_
 
 #include <stdarg.h>
+#include <stddef.h>
 
 // snprintf()-like function. Should be mostly C11 compliant, except:
 //  - Does not support the following conversion specifiers: n
