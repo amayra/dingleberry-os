@@ -779,7 +779,7 @@ static int vsnprintf_(struct buf *buffer, const char *format, va_list va)
             va_copy(va_r, *args_r.ap);
             rerr = vsnprintf_(buffer, format_r, va_r);
             va_end(va_r);
-            if (!err)
+            if (!err && rerr < 0)
                 err = rerr;
             break;
         }
@@ -799,7 +799,7 @@ static int vsnprintf_(struct buf *buffer, const char *format, va_list va)
     if (buffer->overflow)
         err = -1;
 
-    if (err)
+    if (err < 0)
         return err;
 
     // return total number of chars, including the amount outside of the buffer

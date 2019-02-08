@@ -90,16 +90,18 @@ typedef int (*snprintf_type)(char *str, size_t size, const char *format, ...);
 
 #if TEST_IMPL_DEFINED
 __attribute__((format(printf, 4, 6)))
-static void test_rprintf(snprintf_type cur_snprintf, char *buf, size_t buf_sz,
-                         const char *fmt1, const char *fmt2, ...)
+static int test_rprintf(snprintf_type cur_snprintf, char *buf, size_t buf_sz,
+                        const char *fmt1, const char *fmt2, ...)
 {
+    int r;
     va_list ap;
     va_start(ap, fmt2);
     // (the test is slightly convoluted with using ap two times to test that
     // ap does not need to be va_copy-d by the caller)
-    cur_snprintf(buf, buf_sz, "<start>%r<mid>%r<end>",
-                 fmt1, LIN_VA_LIST(ap), fmt2, LIN_VA_LIST(ap));
+    r = cur_snprintf(buf, buf_sz, "<start>%r<mid>%r<end>",
+                     fmt1, LIN_VA_LIST(ap), fmt2, LIN_VA_LIST(ap));
     va_end(ap);
+    return r;
 }
 #endif
 
@@ -717,9 +719,13 @@ static void run_test(snprintf_type cur_snprintf)
     #endif
 
     #if TEST_IMPL_DEFINED
-    test_rprintf(cur_snprintf, buffer, sizeof(buffer), "%s_%s", "%s:%.3s",
-                 "hello", "world");
+    r = test_rprintf(cur_snprintf, buffer, sizeof(buffer), "%s_%s", "%s:%.3s",
+                     "hello", "world");
     REQUIRE_STR_EQ(buffer, "<start>hello_world<mid>hello:wor<end>");
+    REQUIRE_INT_EQ(r, 37);
+    r = test_rprintf(cur_snprintf, buffer, sizeof(buffer), "%s_%s", "%w",
+                     "hello", "world");
+    assert(r < 0);
     #endif
 
     printf("All tests succeeded.\n");
