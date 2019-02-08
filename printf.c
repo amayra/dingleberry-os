@@ -41,7 +41,6 @@
 #include <inttypes.h>
 #include <math.h>
 #include <float.h>
-#include <stdio.h>
 
 #include "minmax.h"
 #include "printf.h"
