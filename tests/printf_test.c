@@ -30,6 +30,7 @@
 #define _GNU_SOURCE
 
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -104,6 +105,77 @@ static int test_rprintf(snprintf_type cur_snprintf, char *buf, size_t buf_sz,
     return r;
 }
 #endif
+
+#define NUM_BPRINTF_BUFS 20
+
+struct bprintf_res {
+    const char *bufs[NUM_BPRINTF_BUFS];
+    int res;
+    int fail_at;
+    bool fail_at_enable;
+
+    char buf[20];
+    size_t buf_sz;
+
+    char *cur, *end;
+    size_t current;
+};
+
+static void bprintf_flush(struct bprintf_res *res, bool final)
+{
+    size_t size = res->cur - res->buf;
+    assert(size <= res->buf_sz);
+
+    assert(res->current < NUM_BPRINTF_BUFS - 1); // too many fragments
+
+    const char *expected = res->bufs[res->current];
+    assert(expected); // expected a fragment
+    assert(strlen(expected) == size);
+    assert(strncmp(expected, res->buf, size) == 0);
+
+    if (res->fail_at_enable && res->fail_at == res->current) {
+        // don't reset buffer
+    } else {
+        res->cur = res->buf;
+    }
+
+    res->current++;
+
+    if (final) {
+        // all fragments done?
+        assert(res->current < NUM_BPRINTF_BUFS);
+        assert(!res->bufs[res->current]);
+    }
+}
+
+static void bprintf_cb(void *cb_ctx)
+{
+    struct bprintf_res *res = cb_ctx;
+
+    assert(res->cur == res->end); // guarantees no redundant calls
+
+    bprintf_flush(res, false);
+}
+
+__attribute__((format(printf, 2, 3)))
+static void test_bprintf(struct bprintf_res *res, const char *fmt, ...)
+{
+    assert(res->buf_sz <= sizeof(res->buf)); // wrong test parameter
+
+    res->cur = res->buf + strlen(res->buf);
+    res->end = res->buf + res->buf_sz;
+
+    int r;
+    va_list ap;
+    va_start(ap, fmt);
+    r = lin_bprintf(&res->cur, &res->end, bprintf_cb, res, fmt, ap);
+    va_end(ap);
+
+    // correct return
+    assert(r == res->res);
+
+    bprintf_flush(res, true);
+}
 
 static void run_test(snprintf_type cur_snprintf)
 {
@@ -727,6 +799,100 @@ static void run_test(snprintf_type cur_snprintf)
                      "hello", "world");
     assert(r < 0);
     #endif
+
+    if (cur_snprintf == lin_snprintf) {
+        // Tests that have no equivalent in system printf, but do not otherwise
+        // interfere with standard mechanisms or compiler warnings, and can
+        // always be run.
+
+        struct bprintf_res t;
+
+        t = (struct bprintf_res) {
+            .bufs = {
+                "he1", "lLo", " wo", "rld", "!!1", " 45", "6",
+            },
+            .buf = "",
+            .buf_sz = 3,
+        };
+        test_bprintf(&t, "he1lLo %s %d", "world!!1", 456);
+
+        // No redundant get_space calls if enough space.
+        t = (struct bprintf_res) {
+            .bufs = {
+                "hello",
+            },
+            .buf = "",
+            .buf_sz = 10,
+        };
+        test_bprintf(&t, "hello");
+
+        // ...even if the space ran out after the last byte.
+        t = (struct bprintf_res) {
+            .bufs = {
+                "hello",
+            },
+            .buf = "",
+            .buf_sz = 5,
+        };
+        test_bprintf(&t, "hello");
+
+        // Some of the buffer can be used at the start (effectively lin_bprintf
+        // will observe changing buffer sizes).
+        t = (struct bprintf_res) {
+            .bufs = {
+                "helo1", "23456", "7",
+            },
+            .buf = "he",
+            .buf_sz = 5,
+        };
+        test_bprintf(&t, "lo%d", 1234567);
+
+        t = (struct bprintf_res) {
+            .bufs = {
+                "hel", "lot", "lot",
+            },
+            .buf = "",
+            .buf_sz = 3,
+            .fail_at = 1,
+            .fail_at_enable = true,
+            .res = -1,
+        };
+        test_bprintf(&t, "hellothere");
+
+        // It's allowed not to pass in a callback function.
+        char tmp[20];
+        char *tmp_dst = tmp;
+        char *tmp_end = tmp + sizeof(tmp);
+        va_list unused;
+        int res = lin_bprintf(&tmp_dst, &tmp_end, NULL, NULL, "hello", unused);
+        assert(res == 0 && strncmp(tmp, "hello", 5) == 0);
+
+        // ...and if space isn't enough, it fails only after it's exhausted.
+        memcpy(tmp, "xxxn", 4);
+        tmp_dst = tmp;
+        tmp_end = tmp + 3;
+        res = lin_bprintf(&tmp_dst, &tmp_end, NULL, NULL, "hello", unused);
+        assert(res == -1 && strncmp(tmp, "heln", 4) == 0);
+
+        #if TEST_IMPL_DEFINED
+        t = (struct bprintf_res) {
+            .bufs = {""},
+            .buf = "",
+            .buf_sz = 3,
+        };
+        test_bprintf(&t, "");
+
+        t = (struct bprintf_res) {
+            .bufs = {
+                "he1", "l%w", "<er", "ror", ">uo",
+            },
+            .buf = "",
+            .buf_sz = 3,
+            .res = -1,
+        };
+        test_bprintf(&t, "he1l%wuo");
+        #endif
+    }
 
     printf("All tests succeeded.\n");
 }

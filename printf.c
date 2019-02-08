@@ -77,28 +77,70 @@ struct buf {
     char *dst;
     char *end;
     size_t idx;
-    bool overflow;
+    bool idx_overflow;
+
+    void (*user_get_space)(void *);
+    void *user_get_space_ctx;
+    char **user_dst;
+    char **user_end;
+    bool user_failed;
 };
+
+// Wants to write at least 1 byte. Return if at least 1 byte is free.
+static bool get_buf(struct buf *buf)
+{
+    bool has_free = buf->dst < buf->end;
+    if (buf->user_failed || has_free)
+        return has_free;
+
+    if (buf->user_get_space) {
+        *buf->user_dst = buf->dst;
+        buf->user_get_space(buf->user_get_space_ctx);
+        buf->dst = *buf->user_dst;
+        buf->end = *buf->user_end;
+
+        has_free = buf->dst < buf->end;
+    }
+
+    // If it failed, prevent further redundant calls.
+    if (!has_free)
+        buf->user_failed = true;
+
+    return has_free;
+}
 
 static void outc(struct buf *buf, char c)
 {
-    if (buf->dst < buf->end)
-        *buf->dst++ = c;
     buf->idx++;
     if (!buf->idx)
-        buf->overflow = true;
+        buf->idx_overflow = true;
+
+    if (buf->dst == buf->end && !get_buf(buf))
+        return;
+
+    *buf->dst++ = c;
 }
 
 static void out(struct buf *buf, const char *s, size_t l)
 {
-    size_t space = buf->end - buf->dst;
-    if (space > l)
-        space = l;
-    memcpy(buf->dst, s, space);
-    buf->dst += space;
     buf->idx += l;
     if (buf->idx < l)
-        buf->overflow = true;
+        buf->idx_overflow = true;
+
+    while (l) {
+        size_t space = buf->end - buf->dst;
+        if (!space) {
+            if (!get_buf(buf))
+                return;
+            space = buf->end - buf->dst;
+        }
+        if (space > l)
+            space = l;
+        memcpy(buf->dst, s, space);
+        buf->dst += space;
+        l -= space;
+        s += space;
+    }
 }
 
 static void pad(struct buf *f, char c, int w, int l, int fl)
@@ -796,14 +838,7 @@ static int vsnprintf_(struct buf *buffer, const char *format, va_list va)
         }
     }
 
-    if (buffer->overflow)
-        err = -1;
-
-    if (err < 0)
-        return err;
-
-    // return total number of chars, including the amount outside of the buffer
-    return buffer->idx <= INT_MAX ? buffer->idx : -1;
+    return err;
 }
 
 int lin_snprintf(char *buffer, size_t count, const char *format, ...)
@@ -829,5 +864,28 @@ int lin_vsnprintf(char *buffer, size_t count, const char *format, va_list va)
     if (count)
         buf.dst[0] = '\0';
 
-    return res;
+    if (res < 0)
+        return res;
+
+    // return total number of chars, including the amount outside of the buffer
+    return buf.idx_overflow || buf.idx > INT_MAX ? -1 : buf.idx;
+}
+
+int lin_bprintf(char **dst, char **end, void (*get_space)(void *cb_ctx),
+                void *cb_ctx, const char *format, va_list va)
+{
+    struct buf buffer = {
+        .dst = *dst,
+        .end = *end,
+        .user_get_space = get_space,
+        .user_get_space_ctx = cb_ctx,
+        .user_dst = dst,
+        .user_end = end,
+    };
+
+    int r = vsnprintf_(&buffer, format, va);
+    *dst = buffer.dst;
+    if (r >= 0 && buffer.user_failed)
+        r = -1;
+    return r;
 }
