@@ -82,10 +82,12 @@ int lin_vsnprintf(char *str, size_t size, const char *format, va_list ap);
 int lin_bprintf(char **dst, char **end, void (*get_space)(void *cb_ctx),
                 void *cb_ctx, const char *format, va_list ap);
 
+// Internal helper for %r. Do not use directly.
 struct lin_va_list {
     va_list *ap;
 };
 
+// Helper for %r. Use this to pass va_list as format arguments.
 #define LIN_VA_LIST(x) ((struct lin_va_list){&(x)})
 
 #endif
