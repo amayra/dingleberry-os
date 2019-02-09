@@ -1,0 +1,35 @@
+This is a small hobby kernel. Is it useful for anything? Not at all. Purpose is
+a combination of ergotherapy and self-harm.
+
+I chose RISC-V (rv64) as hardware platform, because it's simple and almost
+entirely free of absurd legacy baggage. x86 seems to be a common target for
+osdev, but it's entirely crazy and fucked up. Years ago, I targeted x86_64,
+and I never ever want to have to piece together a GDT or anything like this.
+RISC-V not only has no legacy baggage, but they also chose the simplest and
+most effective approach. Even the most complex data structures like MMU page
+tables are extremely simple. x86 Protected Mode on the other hand was not even
+sane when it was created, and it got worse. MUCH WORSE. Don't try to target
+x86 for osdev if you don't want to become fucking crazy.
+
+I don't have any RISC-V hardware (not even on a FPGA), so qemu with the virt
+platform is used (see qemu.sh).
+
+Some pieces of code related to boot (especially parts of the linker script) were
+taken from Linux. qemu's RISC-V boot process was at the time of this writing
+absurdly broken, so that was a help. I'm less than impressed with qemu's fucked
+up RISC-V boot process, and the boot loader isn't great either.
+
+Large parts of the libc were retrieved from musl. In particular, some headers
+were pulled from a musl _installation_, and then partially edited. This was so
+that I could skip their weird build process, which includes generating a few
+system headers with a script. Since musl focuses on Linux userspace (rather than
+freestanding embedded), there would be a lot of parts that don't make sense or
+which would have to be turned into stubs during "porting". Also, all other
+embedded libcs are burning trash fires. And since I further want to possibly
+implement some things myself, this was the easiest choice. YOLO.
+
+musl from the riscv-musl repository was used, commit 2fedc58ed98a8.
+
+But what does it do? It prints "Hello world." to the qemu serial console. In
+case I keep developing on this, the way it prints this message will become
+increasingly more complex (but still "Hello world." on a serial console).
