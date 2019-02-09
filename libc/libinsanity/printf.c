@@ -45,6 +45,8 @@
 #include "minmax.h"
 #include "printf.h"
 
+#define USE_FLOAT 0
+
 // internal flag definitions
 #define FLAGS_ZEROPAD   (1U <<  0U)
 #define FLAGS_LEFT      (1U <<  1U)
@@ -258,6 +260,8 @@ static void ntoa_format(struct buf *buffer, uintmax_t value, bool negative,
     if ((flags & FLAGS_LEFT))
         out_pad(buffer, ' ', space_pad);
 }
+
+#if USE_FLOAT
 
 static const char xdigits[16] = "0123456789ABCDEF";
 
@@ -576,6 +580,8 @@ static int fmt_fp(struct buf *f, long double y, int w, int p, int fl, int t)
     return MAX(w, pl + l);
 }
 
+#endif
+
 // internal vsnprintf
 static int vsnprintf_(struct buf *buffer, const char *format, va_list va)
 {
@@ -773,6 +779,7 @@ static int vsnprintf_(struct buf *buffer, const char *format, va_list va)
             }
             break;
         }
+#if USE_FLOAT
         case 'f':
         case 'F':
         case 'g':
@@ -785,6 +792,7 @@ static int vsnprintf_(struct buf *buffer, const char *format, va_list va)
                 out(buffer, "<error>", 7);
             break;
         }
+#endif
         case 'c': {
             // pre padding
             if (!(flags & FLAGS_LEFT) && width > 1)
