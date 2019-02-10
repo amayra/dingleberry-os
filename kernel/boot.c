@@ -9,6 +9,15 @@
 extern char _start;
 extern char _end;
 
+extern char _stext;
+extern char _etext;
+extern char _srodata;
+extern char _erodata;
+extern char _sdata;
+extern char _edata;
+extern char _sbss;
+extern char _ebss;
+
 struct fdt_header {
     uint32_t magic;
     uint32_t totalsize;
@@ -160,6 +169,21 @@ static void fdt_parse(void *fdt)
     printf("FDT end.\n");
 }
 
+static void map_kernel(void *addr, size_t size, int flags)
+{
+    uint64_t phys = (uintptr_t)addr - KERNEL_PHY_BASE;
+
+    // Extent address range to page boundaries.
+    size += phys & (PAGE_SIZE - 1);
+    phys &= ~(uint64_t)(PAGE_SIZE - 1);
+    addr = (void *)((uintptr_t)addr & ~(uintptr_t)(PAGE_SIZE - 1));
+    size = (size + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+
+    bool r = aspace_map(aspace_get_kernel(), addr, phys, size, flags);
+    if (!r)
+        panic("Could not establish kernel mapping.\n");
+}
+
 int boot_entry(uintptr_t fdt_phys)
 {
     printf("Booting with FDT at %p.\n", (void *)fdt_phys);
@@ -220,15 +244,37 @@ int boot_entry(uintptr_t fdt_phys)
     page_alloc_debug_dump();
 #endif
 
-    /*
     aspace_init();
-    bool r = aspace_map(aspace_get_kernel(), (void *)KERNEL_PHY_BASE,
-               0, BOOT_PHY_MAP_SIZE, MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X);
-    assert(r);
-    */
+
+    // Remap used parts of the virtual address space.
+
+    for (int index = 0; ; index++) {
+        uint64_t addr, size;
+        page_alloc_get_ram(index, &addr, &size);
+        if (!size)
+            break;
+        void *virt = page_phys_to_virt(addr);
+        assert(virt);
+        bool r = aspace_map(aspace_get_kernel(), virt, addr, size,
+                            MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X);
+        if (!r)
+            panic("Could create virtual mapping for entire RAM.\n");
+    }
+
+    // Mapping the same page multiple time fully overwrites the previous
+    // permissions, so be careful of the order and the linker script.
+    map_kernel(&_stext,     &_etext - &_stext,      MMU_FLAG_R | MMU_FLAG_X);
+    map_kernel(&_sdata,     &_edata - &_sdata,      MMU_FLAG_R | MMU_FLAG_W);
+    map_kernel(&_sbss,      &_ebss - &_sbss,        MMU_FLAG_R | MMU_FLAG_W);
+    map_kernel(&_srodata,   &_erodata - &_srodata,  MMU_FLAG_R);
+
+    // Switch away from the boot page table.
+    aspace_switch_to(aspace_get_kernel());
+
+    page_alloc_debug_dump();
 
     // And this is why we did all this crap.
     printf("Hello world.\n");
-    //memset((void *)KERNEL_PHY_BASE + 0x80000000, 0xDE, FW_JUMP_ADDR_PHY - 0x80000000);
-    panic("stopping\n");
+    while(1)
+        asm volatile("wfi");
 }

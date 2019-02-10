@@ -21,35 +21,14 @@ SECTIONS
 {
     /* Beginning of code and text segment */
     . = LOAD_OFFSET;
-    _start = .;
-    __init_begin = .;
-    .head.text : AT(ADDR(.head.text) - LOAD_OFFSET) {
-        KEEP(*(.head.text))
-    }
-    . = ALIGN(PAGE_SIZE);
-    .init.text : AT(ADDR(.init.text) - LOAD_OFFSET) {
-        _sinittext = .;
-        *(.init.text .init.text.*)
-        *(.text.startup)
-        _einittext = .;
-    }
-    .init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {
-        *(.init.rodata .init.rodata.*)
-        . = ALIGN(16);
-        __setup_start = .;
-        KEEP(*(.init.setup))
-        __setup_end = .;
-        . = ALIGN(4);
-        __initramfs_start = .;
-        KEEP(*(.init.ramfs))
-        . = ALIGN(8);
-        KEEP(*(.init.ramfs.info))
-    }
-    __init_end = .;
 
-    .text : {
+    .text : AT(ADDR(.text) - LOAD_OFFSET) {
         _text = .;
         _stext = .;
+        /* The boot loader jumps at the start of the binary, thus objdump must
+         * output .init.text as byte 0. */
+        _start = .;
+        *(.init.text .init.text.*)
         . = ALIGN(8);
         *(.text .text.fixup)
         *(.ref.text)
@@ -57,37 +36,38 @@ SECTIONS
         _etext = .;
     }
 
-    /* Start of data section */
-    _sdata = .;
-    . = ALIGN((L1_CACHE_BYTES));
+    . = ALIGN(PAGE_SIZE);
+
     .rodata : AT(ADDR(.rodata) - LOAD_OFFSET) {
-        __start_rodata = .;
+        _srodata = .;
         *(.rodata) *(.rodata.*)
-    }
-    .srodata : {
         *(.srodata*)
+        _erodata = .;
     }
 
     . = ALIGN(PAGE_SIZE);
+
     .data : AT(ADDR(.data) - LOAD_OFFSET) {
+        _sdata = .;
+        /* https://www.sifive.com/blog/all-aboard-part-3-linker-relaxation-in-riscv-toolchain */
+        __global_pointer$ = . + 0x800;
         *(.data)
     }
     .sdata : {
-        __global_pointer$ = . + 0x800;
         *(.sdata*)
         /* End of data section */
         _edata = .;
-        *(.sbss*)
     }
 
-    __bss_start = .;
+    _sbss = .;
     .bss : AT(ADDR(.bss) - LOAD_OFFSET) {
+        *(.sbss*)
         *(.bss..page_aligned)
         *(.dynbss)
         *(.bss)
         *(COMMON)
     }
-    __bss_stop = .;
+    _ebss = .;
 
     .notes : AT(ADDR(.notes) - LOAD_OFFSET) {
         __start_notes = .;

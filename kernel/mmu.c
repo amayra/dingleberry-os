@@ -12,12 +12,15 @@ enum {
     MMU_FLAG_D = (1 << 7),
 };
 
+// Physical page number.
+#define PPN_FROM_PHYS(phys) ((phys) >> PAGE_SHIFT)
+
 // Given a valid PTE, return the full physical address in it.
 #define PTE_GET_PHYS(pte) (((pte) >> 10) << PAGE_SHIFT)
 
 // Given an aligned physical address, return the address shifted into the
 // position as required by PTEs.
-#define PTE_FROM_PHYS(phys) (((phys) >> PAGE_SHIFT) << 10)
+#define PTE_FROM_PHYS(phys) (PPN_FROM_PHYS(phys) << 10)
 
 struct aspace {
     bool is_kernel;
@@ -73,10 +76,10 @@ static bool write_pt(struct aspace *aspace, uint64_t virt, uint64_t pte,
     uint64_t pt_phy = aspace->root_pt;
 
     for (size_t n = 0; n < MMU_NUM_LEVELS - 1; n++) {
+        size_t entry = MMU_PTE_INDEX(virt, n);
         uint64_t *pt = page_phys_to_virt(pt_phy);
         assert(pt);
 
-        size_t entry = MMU_PTE_INDEX(virt, n);
         if (!(pt[entry] & MMU_FLAG_V)) {
             assert(!pt[entry]); // we don't use the spare bits for anything
 
@@ -87,13 +90,13 @@ static bool write_pt(struct aspace *aspace, uint64_t virt, uint64_t pte,
 
             uint64_t npt_phys = page_alloc_phy(1, PAGE_USAGE_PT);
             if (npt_phys == INVALID_PHY_ADDR)
-                assert(0);
-
-            pt[entry] = PTE_FROM_PHYS(npt_phys) | MMU_FLAG_V;
+                return false;
 
             // Set all entries to unmapped.
             uint64_t *npt = page_phys_to_virt(npt_phys);
             memset(npt, 0, PAGE_SIZE);
+
+            pt[entry] = PTE_FROM_PHYS(npt_phys) | MMU_FLAG_V;
 
             // Note: I don't think there are any "failure" TLB entries, so no
             // TLB shootdown or flushing of any kind is necessary, at least in
@@ -102,8 +105,16 @@ static bool write_pt(struct aspace *aspace, uint64_t virt, uint64_t pte,
 
         // Next page table entry.
         uint64_t npte = pt[entry];
+
+        // Superpages are leaf entries on levels above the last, and supporting
+        // them (so that you can overmap pages within them) would require
+        // allocating a page table like above, then initializing every entry
+        // accordingly, then killing TLBs. Very possible and not hard, but don't
+        // bother with it for now. Also, it would mean unmap could fail if it
+        // tries to split a superpage and no memory is available.
         if (npte & (MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X))
             panic("unexpected superpage found");
+
         pt_phy = PTE_GET_PHYS(npte);
     }
 
@@ -155,7 +166,6 @@ bool aspace_map(struct aspace* aspace, void *virt, uint64_t phys, size_t size,
     uint64_t pte = 0;
     if (phys != INVALID_PHY_ADDR) {
         pte |= flags;
-        pte |= PTE_FROM_PHYS(phys);
         pte |= MMU_FLAG_V;
     }
 
@@ -166,15 +176,28 @@ bool aspace_map(struct aspace* aspace, void *virt, uint64_t phys, size_t size,
     // No need to allocate anything if we just overwrite the pte.
     if (pte) {
         for (uint64_t offs = 0; offs < size; offs += PAGE_SIZE) {
+            // Note: could skip redundant runs of addresses in leaf page tables
+            // each time we know that page table was populated.
             if (!write_pt(aspace, ivirt + offs, 0, true))
                 return false; // OOM
         }
     }
 
     for (uint64_t offs = 0; offs < size; offs += PAGE_SIZE) {
-        bool r = write_pt(aspace, ivirt + offs, pte, false);
+        uint64_t cur_pte = pte ? pte | PTE_FROM_PHYS(phys + offs) : 0;
+        bool r = write_pt(aspace, ivirt + offs, cur_pte, false);
         assert(r);
     }
 
     return true;
+}
+
+void aspace_switch_to(struct aspace* aspace)
+{
+    // Mode 9 = Sv48.
+    uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(aspace->root_pt);
+    asm volatile("csrw satp, %0 ; sfence.vma zero"
+        : "=r" (satp)
+        : "0" (satp)
+        : "memory");
 }

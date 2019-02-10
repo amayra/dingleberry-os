@@ -33,6 +33,7 @@
 //  level 3: "page"
 // (This is a bit shifted: root page table is not called "terapage", only its
 // leaf entries.)
+// Also we invert the level numbers. In this code, level 0 is the root.
 #define MMU_NUM_LEVELS          4
 #define MMU_PTE_BITS            9
 
@@ -60,7 +61,8 @@
 // We establish a 1:1 map of physical memory to virtual, with a base offset. The
 // entire kernel virtual address space is mapped to the start of physical
 // memory. You access physical address x with a (KERNEL_PHY_BASE + x) virtual
-// memory access.
+// memory access. At boot time, this only works within BOOT_PHY_MAP_SIZE.
+// After boot, only RAM is mapped, and possibly some other explicit mappings.
 #define KERNEL_PHY_BASE         KERNEL_SPACE_BASE
 
 // Size of kernel physical address space mapped at boot.

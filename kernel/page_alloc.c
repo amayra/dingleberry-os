@@ -84,7 +84,7 @@ static void mark_pages(uint64_t pn_start, uint64_t pn_end, uint8_t old_flags,
     }
 }
 
-void page_alloc_mark(uint64_t start, size_t size, enum page_usage usage)
+void page_alloc_mark(uint64_t start, uint64_t size, enum page_usage usage)
 {
     if (!size || ram_base_phy == INVALID_PHY_ADDR)
         return;
@@ -100,7 +100,20 @@ void page_alloc_mark(uint64_t start, size_t size, enum page_usage usage)
     mark_pages(pn_start, pn_end, PAGE_USAGE_FREE, usage);
 }
 
-bool page_alloc_add_ram(uint64_t base_phy, size_t size)
+void page_alloc_get_ram(int index, uint64_t *base, uint64_t *size)
+{
+    *base = 0;
+    *size = 0;
+
+    // This implementation supports only one range.
+    if (index != 0 || ram_base_phy == INVALID_PHY_ADDR)
+        return;
+
+    *base = ram_base_phy;
+    *size = ram_num_pages * PAGE_SIZE;
+}
+
+bool page_alloc_add_ram(uint64_t base_phy, uint64_t size)
 {
     if (!size)
         return true;
@@ -180,7 +193,6 @@ void page_free_phy(uint64_t addr, size_t num_pages)
         return;
 
     assert(addr != INVALID_PHY_ADDR && num_pages);
-    assert(addr < BOOT_PHY_MAP_SIZE);
     assert(!(addr & (PAGE_SIZE - 1)));
 
     uint64_t pn = addr / PAGE_SIZE;
@@ -202,8 +214,9 @@ void page_free_phy(uint64_t addr, size_t num_pages)
 
 void *page_phys_to_virt(uint64_t addr)
 {
-    return addr < BOOT_PHY_MAP_SIZE ?
-        (void *)(uintptr_t)(KERNEL_PHY_BASE + addr) : NULL;
+    if (addr >= ram_base_phy && (addr - ram_base_phy) < ram_num_pages * PAGE_SIZE)
+        return (void *)(uintptr_t)(KERNEL_PHY_BASE + addr);
+    return NULL;
 }
 
 void *page_alloc(size_t size, enum page_usage usage)
@@ -229,9 +242,6 @@ void page_free(void *addr, size_t size)
     assert((uintptr_t)addr >= KERNEL_PHY_BASE);
 
     uint64_t phy_addr = (uintptr_t)addr - KERNEL_PHY_BASE;
-
-    assert(phy_addr < BOOT_PHY_MAP_SIZE);
-
     page_free_phy(phy_addr, (size + PAGE_SIZE - 1) / PAGE_SIZE);
 }
 

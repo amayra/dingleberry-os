@@ -37,8 +37,8 @@ kernel.elf: $(OBJECTS) kernel.ld
 
 kernel.bin: kernel.elf
 	# (Allocating the zeros will make sure BSS is cleared. Needs a little
-	# less ASM. If anyone knows where Linux/RISC-V clears this, please call
-	# me.)
+	# less ASM. If anyone knows where Linux/RISC-V clears this when OpenSBI
+	# is used, please call me.)
 	$(OBJCOPY) -O binary --set-section-flags .bss=alloc,load,contents $< $@
 
 -include $(DEP_FILES)

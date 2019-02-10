@@ -120,6 +120,9 @@ boot_smp:
 
     .align 3
 crash:
+    csrr a0, sepc
+    csrr a1, scause
+    csrr a2, stval
     j crash
 
 .section ".rodata", "a"

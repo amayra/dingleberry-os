@@ -49,3 +49,5 @@ struct aspace *aspace_get_kernel(void);
 //  flags: MMU_FLAG_* flags
 bool aspace_map(struct aspace* aspace, void *virt, uint64_t phys, size_t size,
                 int flags);
+
+void aspace_switch_to(struct aspace* aspace);
