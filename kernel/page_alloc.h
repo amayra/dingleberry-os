@@ -16,6 +16,7 @@ enum page_usage {
     PAGE_USAGE_GENERAL_2,
     PAGE_USAGE_GENERAL_3,
     PAGE_USAGE_SLOBBY,
+    PAGE_USAGE_PT,
 
     // Invalid value
     PAGE_USAGE_COUNT
@@ -32,8 +33,8 @@ bool page_alloc_add_ram(uint64_t base_phy, size_t size);
 // page_alloc_add_ram(), even if the regions overlap.
 void page_alloc_mark(uint64_t base_phy, size_t size, enum page_usage usage);
 
-// Allocate num_pages of memory. Return INVALID_ADDR on failure. When freeing
-// pages, the pointer, page number, and usage must be the same.
+// Allocate num_pages of memory. Return INVALID_PHY_ADDR on failure. When
+// freeing pages, the pointer, number of pages, and usage must be the same.
 // usage is for debugging.
 uint64_t page_alloc_phy(size_t num_pages, enum page_usage usage);
 void page_free_phy(uint64_t addr, size_t num_pages);

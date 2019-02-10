@@ -17,10 +17,14 @@
 // We're hardcoded to Sv48.
 #define MMU_ADDRESS_BITS        48
 
+#define MMU_ADDRESS_MAX         ULL(0xFFFFFFFFFFFFFFFF)
+
+#define MMU_ADDRESS_LOWER_MAX   ((ULL(1) << (MMU_ADDRESS_BITS - 1)) - 1)
+
 // The last valid address bit must be repeated in the unused higher address bits
 // (like sign extension). This is the first valid upper address.
 #define MMU_ADDRESS_UPPER       \
-    (ULL(0xFFFFFFFFFFFFFFFF) & ~((ULL(1) << (MMU_ADDRESS_BITS - 1)) - 1))
+    (MMU_ADDRESS_MAX & ~((ULL(1) << (MMU_ADDRESS_BITS - 1)) - 1))
 
 // Sv48. Names of pages on specific levels by RISC-V terminology:
 //  level 0: "terapage"

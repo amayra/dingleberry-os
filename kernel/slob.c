@@ -25,12 +25,15 @@ struct slobby {
     uint32_t freemap[];
 };
 
-void slob_init(struct slob *slob, size_t element_size)
+// Lazy initialization. (No, we don't want to play tricks like putting slobs
+// into special sections and going through them at boot.)
+static void slob_lazy_init(struct slob *slob)
 {
-    *slob = (struct slob){
-        .element_size = element_size,
-        .num_per_slobby = (PAGE_SIZE - sizeof(struct slobby)) / element_size,
-    };
+    if (slob->meta_size)
+        return;
+
+    slob->num_per_slobby =
+        (PAGE_SIZE - sizeof(struct slobby)) / slob->element_size;
 
     // Bitmap size depends on the number of items.
     while (1) {
@@ -40,7 +43,7 @@ void slob_init(struct slob *slob, size_t element_size)
         while (slob->meta_size & (alignof(struct slobby) - 1))
             slob->meta_size++;
         size_t total_size =
-            element_size * slob->num_per_slobby + slob->meta_size;
+            slob->element_size * slob->num_per_slobby + slob->meta_size;
         if (total_size <= PAGE_SIZE || !slob->num_per_slobby)
             break;
         slob->num_per_slobby--;
@@ -76,6 +79,8 @@ void allocate_slobby_page(struct slob *slob)
 
 void *slob_allocz(struct slob *slob)
 {
+    slob_lazy_init(slob);
+
     if (!slob->free_list.head)
         allocate_slobby_page(slob);
     struct slobby *s = slob->free_list.head;
@@ -88,7 +93,8 @@ void *slob_allocz(struct slob *slob)
     size_t index = slob->num_per_slobby;
 
     for (size_t n = 0; n < slob->num_per_slobby; n += 32) {
-        // Could use __builtin_ffsl here.
+        // Could use __builtin_ffsl here (except it just generates a call to
+        // libgcc using fallback code. There is no bitscan instruction yet.)
         uint32_t v = s->freemap[n / 32];
         if (v) {
             for (size_t b = 0; b < 32; b++) {
@@ -122,6 +128,8 @@ void *slob_allocz(struct slob *slob)
 
 void slob_free(struct slob *slob, void *ptr)
 {
+    slob_lazy_init(slob);
+
     if (!ptr)
         return;
 
@@ -149,6 +157,8 @@ void slob_free(struct slob *slob, void *ptr)
 
 void slob_free_unused(struct slob *slob)
 {
+    slob_lazy_init(slob);
+
     // Could be made O(1) (for low number of fully free slobs, n = total slobs)
     // by putting all fully free slobs into a list.
     struct slobby *s = slob->free_list.head;

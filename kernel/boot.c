@@ -2,6 +2,7 @@
 
 #include "kernel.h"
 #include "memory.h"
+#include "mmu.h"
 #include "page_alloc.h"
 #include "slob.h"
 
@@ -218,6 +219,13 @@ int boot_entry(uintptr_t fdt_phys)
     slob_allocz(&sl);
     page_alloc_debug_dump();
 #endif
+
+    /*
+    aspace_init();
+    bool r = aspace_map(aspace_get_kernel(), (void *)KERNEL_PHY_BASE,
+               0, BOOT_PHY_MAP_SIZE, MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X);
+    assert(r);
+    */
 
     // And this is why we did all this crap.
     printf("Hello world.\n");

@@ -137,6 +137,7 @@ static bool check_usage(enum page_usage usage)
     case PAGE_USAGE_GENERAL_2:
     case PAGE_USAGE_GENERAL_3:
     case PAGE_USAGE_SLOBBY:
+    case PAGE_USAGE_PT:
         return true;
     default:
         return false;
@@ -169,6 +170,7 @@ uint64_t page_alloc_phy(size_t num_pages, enum page_usage usage)
         }
     }
 
+    page_alloc_debug_dump();
     return INVALID_PHY_ADDR;
 }
 
@@ -263,6 +265,7 @@ void page_alloc_debug_dump(void)
                 case PAGE_USAGE_GENERAL_2:  t = "general2"; break;
                 case PAGE_USAGE_GENERAL_3:  t = "general3"; break;
                 case PAGE_USAGE_SLOBBY:     t = "slobby"; break;
+                case PAGE_USAGE_PT:         t = "pagetable"; break;
                 }
                 printf(" - %d (%d pages): %s\n", cur_pn, cur_num, t);
             }
