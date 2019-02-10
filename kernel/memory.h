@@ -11,6 +11,8 @@
 #define PAGE_SHIFT              12
 #define PAGE_SIZE               (1 << PAGE_SHIFT)
 
+#define INVALID_PHY_ADDR        ((uint64_t)-1)
+
 // Usable virtual address bits.
 // We're hardcoded to Sv48.
 #define MMU_ADDRESS_BITS        48
@@ -20,18 +22,28 @@
 #define MMU_ADDRESS_UPPER       \
     (ULL(0xFFFFFFFFFFFFFFFF) & ~((ULL(1) << (MMU_ADDRESS_BITS - 1)) - 1))
 
-// Sv48.
+// Sv48. Names of pages on specific levels by RISC-V terminology:
+//  level 0: "terapage"
+//  level 1: "gigapage"
+//  level 2: "megapage"
+//  level 3: "page"
+// (This is a bit shifted: root page table is not called "terapage", only its
+// leaf entries.)
 #define MMU_NUM_LEVELS          4
 #define MMU_PTE_BITS            9
+
+// Bit position of the PTE index is an address for a page table level.
+#define MMU_PTE_BITPOS(level) \
+    ((MMU_NUM_LEVELS - (level) - 1) * MMU_PTE_BITS + PAGE_SHIFT)
 
 // Get the PTE index for the given address at the given level. Level 0 is the
 // top-level, MMU_NUM_LEVELS-1 the deepest level.
 #define MMU_PTE_INDEX(addr, level) \
-    (((addr) >> ((MMU_NUM_LEVELS - (level) - 1) * MMU_PTE_BITS + PAGE_SHIFT)) & \
-     ((1 << MMU_PTE_BITS) - 1))
+    (((addr) >> MMU_PTE_BITPOS(level)) & ((1 << MMU_PTE_BITS) - 1))
 
-// Sv48 "terapage"
-#define PAGE_SIZE_TERA          (1ULL << 39)
+// Return page size on a specific level. Level 0 is the top-level, and
+// MMU_PAGE_SIZE(MMU_NUM_LEVELS - 1) == PAGE_SIZE.
+#define MMU_PAGE_SIZE(level)    (ULL(1) << MMU_PTE_BITPOS(level))
 
 #define L1_CACHE_SHIFT          6
 #define L1_CACHE_BYTES          (1 << L1_CACHE_SHIFT)
@@ -49,7 +61,7 @@
 
 // Size of kernel physical address space mapped at boot.
 // This uses a single "terapage" PTE.
-#define BOOT_PHY_MAP_SIZE       PAGE_SIZE_TERA
+#define BOOT_PHY_MAP_SIZE       MMU_PAGE_SIZE(0)
 
 // OpenSBI's FW_JUMP_ADDR (for qemu virt platform). When running qemu, we use
 // fw_jump.elf with this address, and load the kernel image to this address.

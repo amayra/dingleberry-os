@@ -1,17 +1,12 @@
-#include <assert.h>
 #include <endian.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
+#include "kernel.h"
 #include "memory.h"
+#include "page_alloc.h"
+#include "slob.h"
 
-#define panic(...) do {     \
-    printf(__VA_ARGS__);    \
-    abort();                \
-} while (0)
+extern char _start;
+extern char _end;
 
 struct fdt_header {
     uint32_t magic;
@@ -54,12 +49,20 @@ static bool str_startswith(const char *s, const char *prefix)
 
 static void fdt_prop(char *node, char *prop, uint8_t *value, size_t size)
 {
-    if (str_startswith(node, "/memory@") && strcmp(prop, "reg") == 0) {
+    if (strcmp(prop, "reg") == 0) {
+        bool is_ram = str_startswith(node, "/memory@");
+        if (is_ram)
+            printf("     This is RAM.\n");
+
         for (size_t n = 0; n < size / 16; n++) {
             uint64_t r[2];
             memcpy(r, value + n * 16, 16);
+            uint64_t start = betoh64(r[0]);
+            uint64_t size = betoh64(r[1]);
             printf("     MEMORY: %016llx - %016llx\n",
-                   (long long)r[0], (long long)(r[0] + r[1] - 1));
+                   (long long)start, (long long)size);
+            if (is_ram)
+                page_alloc_add_ram(start, size);
         }
     }
 }
@@ -138,10 +141,20 @@ static void fdt_parse(void *fdt)
     struct fdt_reserve_entry *resv =
         (void *)((char *)fdt + betoh32(h->off_mem_rsvmap));
     for (size_t n = 0; resv[n].address || resv[n].size; n++) {
+        uint64_t start = betoh64(resv[n].address);
+        uint64_t size = betoh64(resv[n].size);
         printf("RESERVED: %016llx - %016llx\n",
-               (long long)resv[n].address,
-               (long long)(resv[n].address + resv[n].size - 1));
+               (long long)start, (long long)(start + size - 1));
+        page_alloc_mark(start, size, PAGE_USAGE_RESERVED);
     }
+
+    // Maybe we want to keep the FDT.
+    page_alloc_mark((uintptr_t)fdt - KERNEL_PHY_BASE,
+                    betoh32(h->totalsize), PAGE_USAGE_RESERVED);
+
+    // I have no idea? Also 2MB seems a bit much.
+    printf("Adding (missing?) OpenSBI reserved memory.\n");
+    page_alloc_mark(0x80000000, 0x00200000, PAGE_USAGE_RESERVED);
 
     printf("FDT end.\n");
 }
@@ -154,7 +167,60 @@ int boot_entry(uintptr_t fdt_phys)
 
     fdt_parse((void *)(KERNEL_PHY_BASE + fdt_phys));
 
+    page_alloc_mark((uintptr_t)&_start - KERNEL_PHY_BASE, &_end - &_start,
+                    PAGE_USAGE_KERNEL);
+
+    page_alloc_debug_dump();
+
+#if 0
+    void *ad1 = page_alloc(PAGE_SIZE * 3, PAGE_USAGE_GENERAL);
+    void *ad2 = page_alloc(PAGE_SIZE * 4, PAGE_USAGE_GENERAL_2);
+    void *ad3 = page_alloc(PAGE_SIZE, PAGE_USAGE_GENERAL_3);
+    void *ad4 = page_alloc(PAGE_SIZE * 3, PAGE_USAGE_GENERAL);
+    void *ad5 = page_alloc(PAGE_SIZE, PAGE_USAGE_GENERAL);
+    printf("alloc %p %p %p %p %p\n", ad1, ad2, ad3, ad4, ad5);
+    page_alloc_debug_dump();
+    page_free(ad2, PAGE_SIZE * 4);
+    page_alloc_debug_dump();
+    void *ad6 = page_alloc(PAGE_SIZE * 5, PAGE_USAGE_GENERAL);
+    printf("alloc %p\n", ad6);
+    page_alloc_debug_dump();
+    page_free(ad6, PAGE_SIZE * 5);
+    page_alloc_debug_dump();
+    page_free(ad5, PAGE_SIZE);
+    page_free(ad1, PAGE_SIZE * 3);
+    page_alloc_debug_dump();
+    //page_free(ad3, PAGE_SIZE);
+    //page_free(ad4, PAGE_SIZE * 3);
+    page_alloc_debug_dump();
+
+    struct slob sl;
+    slob_init(&sl, 16);
+    static void *ptrs[3096];
+    for (size_t n = 0; n < 3096; n++)
+        ptrs[n] = slob_allocz(&sl);
+    void *a1 = slob_allocz(&sl);
+    void *a2 = slob_allocz(&sl);
+    void *a3 = slob_allocz(&sl);
+    void *a4 = slob_allocz(&sl);
+    printf("%p %p %p %p\n", a1, a2, a3, a4);
+    slob_free(&sl, a1);
+    slob_free(&sl, a4);
+    a1 = slob_allocz(&sl);
+    a4 = slob_allocz(&sl);
+    printf("%p %p %p %p\n", a1, a2, a3, a4);
+    for (size_t n = 0; n < 1000; n++)
+        slob_free(&sl, ptrs[n]);
+
+    slob_allocz(&sl);
+
+    slob_free_unused(&sl);
+    slob_allocz(&sl);
+    page_alloc_debug_dump();
+#endif
+
     // And this is why we did all this crap.
     printf("Hello world.\n");
-    abort();
+    //memset((void *)KERNEL_PHY_BASE + 0x80000000, 0xDE, FW_JUMP_ADDR_PHY - 0x80000000);
+    panic("stopping\n");
 }

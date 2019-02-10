@@ -6,7 +6,7 @@ CFLAGS = $(COMMON_CFLAGS) -nostartfiles -nodefaultlibs -nostdlib -nostdinc -ffre
 
 LDFLAGS = -T kernel.ld -melf64lriscv
 
-OBJECTS = start.o boot.o libc_glue.o \
+OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o \
           $(ROOT)/libc/libinsanity/printf.o \
           $(MUSL)/src/string/memcpy.o \
           $(MUSL)/src/string/memmove.o \

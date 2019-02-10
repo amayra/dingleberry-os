@@ -51,6 +51,7 @@ _start:
      * - X / W / R / V bits set (allow all access; valid)
      * - this makes it a leaf PTE, on Sv48 establishes a 512GB "terapage"
      * - PPN is 0, i.e. points to physical address 0
+     *   (assume relevant RAM is mapped within the 0..512GB region)
      */
     li t1, 0b1111
     /* Set PTE entry 0 (virtual address 0). This allows us to continue executing
