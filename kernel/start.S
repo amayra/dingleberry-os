@@ -19,10 +19,7 @@ _start:
      * atomics to select a main CPU to boot. To make it simpler, require that
      * there is a CPU with mhartid==0 (this happens to work with qemu virt,
      * although the RISC-V spec says there must be at least one hart with ID 0).
-     * Also, for some reason OpenSBI traps CSR accesses, and then fails to
-     * emulate the mhartid register (I guess OpenSBI is quite a POS, it's the
-     * least good thing in RISC-V so far), so use the value provided by OpenSBI
-     * in a0, saved from _start.
+     * Use the value provided by OpenSBI in a0, saved from _start.
      */
     bnez a0, boot_smp
 
