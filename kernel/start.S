@@ -71,7 +71,6 @@ _start:
     la t1, change_to_virtual
     li t2, KERNEL_PHY_BASE
     add t1, t1, t2
-    mv ra, zero
     jr t1
 change_to_virtual:
 
@@ -97,6 +96,7 @@ change_to_virtual:
     li t0, BOOT_STACK_SIZE
     add sp, sp, t0
     mv a0, a1
+    mv ra, zero
     jal boot_entry
     j boot_panic
 

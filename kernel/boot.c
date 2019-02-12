@@ -18,6 +18,75 @@ extern char _edata;
 extern char _sbss;
 extern char _ebss;
 
+void trap(void);
+
+struct trap_info {
+    uint64_t sepc;
+    uint64_t scause;
+    uint64_t stval;
+    uint64_t sip;
+
+    // General purpose registers, minus x0. (regs[n] = x(n + 1).)
+    uint64_t regs[31];
+};
+
+static struct trap_info trap_info;
+
+void c_trap(void)
+{
+    // Doesn't need to be strictly part of the saved state. It won't get
+    // clobbered until we enable interrupts or so.
+    uint64_t sstatus;
+    asm volatile("csrr %0, sstatus" : "=r" (sstatus));
+
+    printf("\n");
+    printf("Oh no! This shit just crashed.\n");
+    printf("\n");
+    printf("SP:         %016"PRIx64"\n", trap_info.regs[1]);
+    printf("sepc:       %016"PRIx64"\n", trap_info.sepc);
+    printf("scause:     %016"PRIx64"\n", trap_info.scause);
+    printf("stval:      %016"PRIx64"\n", trap_info.stval);
+    printf("sip:        %016"PRIx64"\n", trap_info.sip);
+    printf("sstatus:    %016"PRIx64"\n", sstatus);
+    printf("\n");
+
+    uint64_t exc_code = trap_info.scause & ((1ULL << 63) - 1);
+    const char *cause = "?";
+    if (trap_info.scause & (1ULL << 63)) {
+        switch (exc_code) {
+        case 0: cause = "user software IRQ"; break;
+        case 1: cause = "super software IRQ"; break;
+        case 4: cause = "user timer IRQ"; break;
+        case 5: cause = "super timer IRQ"; break;
+        case 8: cause = "user external IRQ"; break;
+        case 9: cause = "super external IRQ"; break;
+        }
+    } else {
+        switch (exc_code) {
+        case 0: cause = "instruction misaligned"; break;
+        case 1: cause = "instruction access"; break;
+        case 2: cause = "illegal instruction"; break;
+        case 3: cause = "breakpoint"; break;
+        case 4: cause = "load misaligned"; break;
+        case 5: cause = "load access"; break;
+        case 6: cause = "store/AMO misaligned"; break;
+        case 7: cause = "load/AMO misaligned"; break;
+        case 8: cause = "user ecall"; break;
+        case 9: cause = "super ecall"; break;
+        case 12: cause = "instruction page fault"; break;
+        case 13: cause = "load page fault"; break;
+        case 15: cause = "store/AMO page fault"; break;
+        }
+    }
+    printf("Cause: %s\n", cause);
+
+    const char *mode = sstatus & (1 << 8) ? "super" : "user";
+    printf("Happened in privilege level: %s\n", mode);
+
+    printf("\n");
+    panic("stop.\n");
+}
+
 struct fdt_header {
     uint32_t magic;
     uint32_t totalsize;
@@ -74,6 +143,21 @@ static void fdt_prop(char *node, char *prop, uint8_t *value, size_t size)
             if (is_ram)
                 page_alloc_add_ram(start, size);
         }
+    }
+
+    if (strcmp(prop, "compatible") == 0) {
+        while (size) {
+            char *c = (char *)value;
+            printf("     '%s'\n", c);
+            size_t len = strlen(c) + 1;
+            assert(len <= size);
+            value += len;
+            size -= len;
+        }
+    }
+
+    if (strcmp(prop, "model") == 0) {
+        printf("     '%s'\n", (char *)value);
     }
 }
 
@@ -273,8 +357,24 @@ int boot_entry(uintptr_t fdt_phys)
 
     page_alloc_debug_dump();
 
+    asm volatile("csrw sscratch, %[sc]\n"
+                 "csrw stvec, %[tr]\n"
+        :
+        : [tr] "r" (trap),
+          [sc] "r" (&trap_info)
+        : "memory");
+
     // And this is why we did all this crap.
     printf("Hello world.\n");
+
+    //*(volatile int *)0xDEAD = 456; // fuck this world
+    //*(volatile int *)0xDEAD;
+    //asm volatile("jr %0" : : "r" (0xDEAC));
+    //asm volatile("ebreak");
+    //asm volatile("ecall"); randomly calls into firmware
+    //asm volatile("sret");
+    //asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
+
     while(1)
         asm volatile("wfi");
 }
