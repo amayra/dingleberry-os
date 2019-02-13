@@ -62,6 +62,12 @@ trap:
      * - set SIE/UIE bits
      * - and SPIE??? (make sure ints are disable on nested supervisor traps)
      */
+.balign 4096
+.globl userspace_template
+userspace_template:
+    wfi
+    j userspace_template
+.balign 4096
 
 .section ".bss..page_aligned", "w"
 .align PAGE_SHIFT

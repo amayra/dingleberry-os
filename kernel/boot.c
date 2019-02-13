@@ -3,6 +3,7 @@
 #include "kernel.h"
 #include "memory.h"
 #include "mmu.h"
+#include "opensbi.h"
 #include "page_alloc.h"
 #include "slob.h"
 
@@ -17,6 +18,15 @@ extern char _sdata;
 extern char _edata;
 extern char _sbss;
 extern char _ebss;
+
+static uint64_t timer_frequency;
+
+uint64_t read_timer_ticks(void)
+{
+    uint64_t r;
+    asm("rdtime %0" : "=r" (r));
+    return r;
+}
 
 void trap(void);
 
@@ -159,6 +169,11 @@ static void fdt_prop(char *node, char *prop, uint8_t *value, size_t size)
     if (strcmp(prop, "model") == 0) {
         printf("     '%s'\n", (char *)value);
     }
+
+    if (strcmp(node, "/cpus") == 0 && strcmp(prop, "timebase-frequency") == 0) {
+        assert(size >= 4); // we can trust devicetree, right?
+        timer_frequency = betoh32(*(uint32_t *)value);
+    }
 }
 
 static void fdt_parse(void *fdt)
@@ -276,6 +291,10 @@ int boot_entry(uintptr_t fdt_phys)
 
     fdt_parse((void *)(KERNEL_PHY_BASE + fdt_phys));
 
+    printf("Timer frequency: %ld Hz\n", (long)timer_frequency);
+    if (!timer_frequency)
+        panic("Timer frequency not found in FDT.\n");
+
     page_alloc_mark((uintptr_t)&_start - KERNEL_PHY_BASE, &_end - &_start,
                     PAGE_USAGE_KERNEL);
 
@@ -357,23 +376,43 @@ int boot_entry(uintptr_t fdt_phys)
 
     page_alloc_debug_dump();
 
+    uint64_t useraddr = page_alloc_phy(1, PAGE_USAGE_GENERAL);
+    assert(useraddr != INVALID_PHY_ADDR);
+    extern char userspace_template;
+    void *uservirt_kernel = page_phys_to_virt(useraddr);
+    memcpy(uservirt_kernel, &userspace_template, PAGE_SIZE);
+    struct aspace *user_aspace = aspace_alloc();
+    assert(user_aspace);
+    void *uservirt = (void *)(uintptr_t)0x10000;
+    bool r = aspace_map(user_aspace, uservirt, useraddr, PAGE_SIZE,
+                        MMU_FLAG_R | MMU_FLAG_X);
+    assert(r);
+    aspace_switch_to(user_aspace);
+
+    asm volatile("csrw sepc, %0" : : "r" (uservirt));
+
     asm volatile("csrw sscratch, %[sc]\n"
                  "csrw stvec, %[tr]\n"
+                 "csrrs zero, sstatus, %[sie]\n"
         :
         : [tr] "r" (trap),
-          [sc] "r" (&trap_info)
+          [sc] "r" (&trap_info),
+          [sie] "r" ((1 << 1) | (1 << 0))
         : "memory");
 
     // And this is why we did all this crap.
     printf("Hello world.\n");
+
+    // cause timer irq in 5 seconds
+    sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
 
     //*(volatile int *)0xDEAD = 456; // fuck this world
     //*(volatile int *)0xDEAD;
     //asm volatile("jr %0" : : "r" (0xDEAC));
     //asm volatile("ebreak");
     //asm volatile("ecall"); randomly calls into firmware
-    //asm volatile("sret");
-    //asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
+    asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
+    asm volatile("sret"); // return to userspace
 
     while(1)
         asm volatile("wfi");

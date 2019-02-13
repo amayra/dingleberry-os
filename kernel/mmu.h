@@ -18,6 +18,7 @@ enum {
 struct aspace;
 
 void aspace_init(void);
+struct aspace *aspace_alloc(void);
 
 // The intention is to keep a special aspace instance for the kernel half of
 // the virtual address space. The kernel address space is the same for all user

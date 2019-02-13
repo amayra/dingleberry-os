@@ -29,7 +29,22 @@ struct aspace {
 
 static struct slob aspace_slob = SLOB_INITIALIZER(struct aspace);
 
-static struct aspace *aspace_alloc(void)
+static struct aspace *kernel_aspace;
+
+// This needs to be called for every aspace whenever the root page table of the
+// kernel aspace is changed.
+static void sync_with_kernel_aspace(struct aspace *aspace)
+{
+    uint64_t *kpt = page_phys_to_virt(kernel_aspace->root_pt);
+    uint64_t *pt = page_phys_to_virt(aspace->root_pt);
+
+    for (size_t n = 256; n < 512; n++) {
+        // Should probably flush TLBs for existing entries that were changed.
+        pt[n] = kpt[n];
+    }
+}
+
+struct aspace *aspace_alloc(void)
 {
     struct aspace *aspace = slob_allocz(&aspace_slob);
     if (!aspace)
@@ -41,14 +56,16 @@ static struct aspace *aspace_alloc(void)
         return NULL;
     }
 
-    // Set all entries to unmapped.
-    uint64_t *pt = page_phys_to_virt(aspace->root_pt);
-    memset(pt, 0, PAGE_SIZE);
+    if (kernel_aspace) {
+        sync_with_kernel_aspace(aspace);
+    } else {
+        // Set all entries to unmapped.
+        uint64_t *pt = page_phys_to_virt(aspace->root_pt);
+        memset(pt, 0, PAGE_SIZE);
+    }
 
     return aspace;
 }
-
-static struct aspace *kernel_aspace;
 
 void aspace_init(void)
 {
@@ -167,6 +184,8 @@ bool aspace_map(struct aspace* aspace, void *virt, uint64_t phys, size_t size,
     if (phys != INVALID_PHY_ADDR) {
         pte |= flags;
         pte |= MMU_FLAG_V;
+        if (ivirt < KERNEL_SPACE_BASE)
+            pte |= MMU_FLAG_U;
     }
 
     // Allocate possibly missing page tables first. This means we can provide
