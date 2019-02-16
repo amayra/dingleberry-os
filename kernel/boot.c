@@ -6,6 +6,7 @@
 #include "opensbi.h"
 #include "page_alloc.h"
 #include "slob.h"
+#include "thread.h"
 
 extern char _start;
 extern char _end;
@@ -19,82 +20,15 @@ extern char _edata;
 extern char _sbss;
 extern char _ebss;
 
-static uint64_t timer_frequency;
+uint64_t timer_frequency;
+void *virt_alloc_cur;
+void *virt_alloc_end;
 
 uint64_t read_timer_ticks(void)
 {
     uint64_t r;
     asm("rdtime %0" : "=r" (r));
     return r;
-}
-
-void trap(void);
-
-struct trap_info {
-    uint64_t sepc;
-    uint64_t scause;
-    uint64_t stval;
-    uint64_t sip;
-
-    // General purpose registers, minus x0. (regs[n] = x(n + 1).)
-    uint64_t regs[31];
-};
-
-static struct trap_info trap_info;
-
-void c_trap(void)
-{
-    // Doesn't need to be strictly part of the saved state. It won't get
-    // clobbered until we enable interrupts or so.
-    uint64_t sstatus;
-    asm volatile("csrr %0, sstatus" : "=r" (sstatus));
-
-    printf("\n");
-    printf("Oh no! This shit just crashed.\n");
-    printf("\n");
-    printf("SP:         %016"PRIx64"\n", trap_info.regs[1]);
-    printf("sepc:       %016"PRIx64"\n", trap_info.sepc);
-    printf("scause:     %016"PRIx64"\n", trap_info.scause);
-    printf("stval:      %016"PRIx64"\n", trap_info.stval);
-    printf("sip:        %016"PRIx64"\n", trap_info.sip);
-    printf("sstatus:    %016"PRIx64"\n", sstatus);
-    printf("\n");
-
-    uint64_t exc_code = trap_info.scause & ((1ULL << 63) - 1);
-    const char *cause = "?";
-    if (trap_info.scause & (1ULL << 63)) {
-        switch (exc_code) {
-        case 0: cause = "user software IRQ"; break;
-        case 1: cause = "super software IRQ"; break;
-        case 4: cause = "user timer IRQ"; break;
-        case 5: cause = "super timer IRQ"; break;
-        case 8: cause = "user external IRQ"; break;
-        case 9: cause = "super external IRQ"; break;
-        }
-    } else {
-        switch (exc_code) {
-        case 0: cause = "instruction misaligned"; break;
-        case 1: cause = "instruction access"; break;
-        case 2: cause = "illegal instruction"; break;
-        case 3: cause = "breakpoint"; break;
-        case 4: cause = "load misaligned"; break;
-        case 5: cause = "load access"; break;
-        case 6: cause = "store/AMO misaligned"; break;
-        case 7: cause = "load/AMO misaligned"; break;
-        case 8: cause = "user ecall"; break;
-        case 9: cause = "super ecall"; break;
-        case 12: cause = "instruction page fault"; break;
-        case 13: cause = "load page fault"; break;
-        case 15: cause = "store/AMO page fault"; break;
-        }
-    }
-    printf("Cause: %s\n", cause);
-
-    const char *mode = sstatus & (1 << 8) ? "super" : "user";
-    printf("Happened in privilege level: %s\n", mode);
-
-    printf("\n");
-    panic("stop.\n");
 }
 
 struct fdt_header {
@@ -283,6 +217,10 @@ static void map_kernel(void *addr, size_t size, int flags)
         panic("Could not establish kernel mapping.\n");
 }
 
+int rec(int x){
+    return rec(x) + 1;
+}
+
 int boot_entry(uintptr_t fdt_phys)
 {
     printf("Booting with FDT at %p.\n", (void *)fdt_phys);
@@ -347,6 +285,11 @@ int boot_entry(uintptr_t fdt_phys)
     page_alloc_debug_dump();
 #endif
 
+    // Virtual memory area that can be used for arbitrary kernel mappings.
+    // Set it to something... arbitrary, hope it doesn't collide.
+    virt_alloc_cur = (void *)(uintptr_t)(KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE);
+    virt_alloc_end = (void *)-(uintptr_t)(PAGE_SIZE);
+
     aspace_init();
 
     // Remap used parts of the virtual address space.
@@ -364,12 +307,12 @@ int boot_entry(uintptr_t fdt_phys)
             panic("Could create virtual mapping for entire RAM.\n");
     }
 
-    // Mapping the same page multiple time fully overwrites the previous
+    // Mapping the same page multiple times fully overwrites the previous
     // permissions, so be careful of the order and the linker script.
     map_kernel(&_stext,     &_etext - &_stext,      MMU_FLAG_R | MMU_FLAG_X);
     map_kernel(&_sdata,     &_edata - &_sdata,      MMU_FLAG_R | MMU_FLAG_W);
     map_kernel(&_sbss,      &_ebss - &_sbss,        MMU_FLAG_R | MMU_FLAG_W);
-    map_kernel(&_srodata,   &_erodata - &_srodata,  MMU_FLAG_R);
+    map_kernel(&_srodata,   &_erodata - &_srodata,  MMU_FLAG_R | MMU_FLAG_X);
 
     // Switch away from the boot page table.
     aspace_switch_to(aspace_get_kernel());
@@ -387,21 +330,17 @@ int boot_entry(uintptr_t fdt_phys)
     bool r = aspace_map(user_aspace, uservirt, useraddr, PAGE_SIZE,
                         MMU_FLAG_R | MMU_FLAG_X);
     assert(r);
-    aspace_switch_to(user_aspace);
+    //aspace_switch_to(user_aspace);
 
-    asm volatile("csrw sepc, %0" : : "r" (uservirt));
-
-    asm volatile("csrw sscratch, %[sc]\n"
-                 "csrw stvec, %[tr]\n"
-                 "csrrs zero, sstatus, %[sie]\n"
-        :
-        : [tr] "r" (trap),
-          [sc] "r" (&trap_info),
-          [sie] "r" ((1 << 1) | (1 << 0))
-        : "memory");
+    //asm volatile("csrw sepc, %0" : : "r" (uservirt));
 
     // And this is why we did all this crap.
     printf("Hello world.\n");
+
+    asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
+    //struct thread tr;
+    //printf("sscratch=%p\n", &tr);
+    //asm volatile("csrw sscratch, %0" : : "r" (&tr));
 
     // cause timer irq in 5 seconds
     sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
@@ -411,8 +350,25 @@ int boot_entry(uintptr_t fdt_phys)
     //asm volatile("jr %0" : : "r" (0xDEAC));
     //asm volatile("ebreak");
     //asm volatile("ecall"); randomly calls into firmware
-    asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
-    asm volatile("sret"); // return to userspace
+    //rec(1);
+
+    //asm volatile("sret"); // return to userspace
+
+    extern void trap(void);
+    asm volatile("csrw stvec, %[tr]\n"
+        :
+        : [tr] "r" (trap),
+          [sc] "r" (0)
+        : "memory");
+
+    struct asm_regs regs = {0};
+    regs.status = 1 << 1;
+    regs.pc = (uintptr_t)uservirt;
+    struct thread *ut = thread_create(user_aspace,  &regs);
+    assert(ut);
+    thread_switch_to(ut);
+
+    //threads_init();
 
     while(1)
         asm volatile("wfi");

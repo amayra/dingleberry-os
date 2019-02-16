@@ -1,5 +1,7 @@
 #include "kernel.h"
+#include "linked_list.h"
 #include "mmu.h"
+#include "mmu_internal.h"
 #include "page_alloc.h"
 #include "slob.h"
 
@@ -22,19 +24,19 @@ enum {
 // position as required by PTEs.
 #define PTE_FROM_PHYS(phys) (PPN_FROM_PHYS(phys) << 10)
 
-struct aspace {
-    bool is_kernel;
-    uint64_t root_pt;
-};
-
 static struct slob aspace_slob = SLOB_INITIALIZER(struct aspace);
 
 static struct aspace *kernel_aspace;
 
-// This needs to be called for every aspace whenever the root page table of the
-// kernel aspace is changed.
+static struct {
+    struct aspace *head, *tail;
+} all_aspaces;
+
 static void sync_with_kernel_aspace(struct aspace *aspace)
 {
+    if (aspace == kernel_aspace)
+        return;
+
     uint64_t *kpt = page_phys_to_virt(kernel_aspace->root_pt);
     uint64_t *pt = page_phys_to_virt(aspace->root_pt);
 
@@ -42,6 +44,14 @@ static void sync_with_kernel_aspace(struct aspace *aspace)
         // Should probably flush TLBs for existing entries that were changed.
         pt[n] = kpt[n];
     }
+}
+
+// This needs to be called for every aspace whenever the root page table of the
+// kernel aspace is changed.
+static void sync_all_with_kernel_aspace(void)
+{
+    for (struct aspace *a = all_aspaces.head; a; a = a->all_aspaces.next)
+        sync_with_kernel_aspace(a);
 }
 
 struct aspace *aspace_alloc(void)
@@ -63,6 +73,8 @@ struct aspace *aspace_alloc(void)
         uint64_t *pt = page_phys_to_virt(aspace->root_pt);
         memset(pt, 0, PAGE_SIZE);
     }
+
+    LL_APPEND(&all_aspaces, aspace, all_aspaces);
 
     return aspace;
 }
@@ -118,6 +130,9 @@ static bool write_pt(struct aspace *aspace, uint64_t virt, uint64_t pte,
             // Note: I don't think there are any "failure" TLB entries, so no
             // TLB shootdown or flushing of any kind is necessary, at least in
             // a single-CPU system.
+
+            if (n == 0 && aspace == kernel_aspace)
+                sync_all_with_kernel_aspace();
         }
 
         // Next page table entry.
@@ -143,6 +158,7 @@ static bool write_pt(struct aspace *aspace, uint64_t virt, uint64_t pte,
     size_t entry = MMU_PTE_INDEX(virt, MMU_NUM_LEVELS - 1);
     pt[entry] = pte;
     // TODO: TLB shootdown
+    asm volatile("sfence.vma zero" : : : "memory");
 
     return true;
 }

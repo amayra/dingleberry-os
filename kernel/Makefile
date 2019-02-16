@@ -2,11 +2,12 @@ include ../shared.mk
 
 ROOT=..
 
-CFLAGS = $(COMMON_CFLAGS) -nostartfiles -nodefaultlibs -nostdlib -nostdinc -ffreestanding -mno-save-restore -mcmodel=medany -mexplicit-relocs -mno-relax -MD -MP -O0 -g  -ggdb
+CFLAGS = $(COMMON_CFLAGS) -nostartfiles -nodefaultlibs -nostdlib -nostdinc -ffreestanding -mno-save-restore -mcmodel=medany -mexplicit-relocs -mno-relax -MD -MP -Os -g  -ggdb
 
 LDFLAGS = -T kernel.ld -melf64lriscv
 
 OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o mmu.o trap.o \
+	  syscalls.o thread.o \
           $(ROOT)/libc/libinsanity/printf.o \
           $(MUSL)/src/string/memcpy.o \
           $(MUSL)/src/string/memmove.o \

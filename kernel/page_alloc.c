@@ -119,9 +119,9 @@ bool page_alloc_add_ram(uint64_t base_phy, uint64_t size)
         return true;
 
     if (base_phy & (PAGE_SIZE - 1))
-        panic("unaligned RAM base");
+        panic("unaligned RAM base\n");
     if (size & (PAGE_SIZE - 1))
-        panic("unaligned RAM size");
+        panic("unaligned RAM size\n");
 
     if (ram_base_phy != INVALID_PHY_ADDR) {
         printf("Only 1 RAM region is supported at the time.\n");
@@ -151,6 +151,7 @@ static bool check_usage(enum page_usage usage)
     case PAGE_USAGE_GENERAL_3:
     case PAGE_USAGE_SLOBBY:
     case PAGE_USAGE_PT:
+    case PAGE_USAGE_THREAD:
         return true;
     default:
         return false;
@@ -276,6 +277,7 @@ void page_alloc_debug_dump(void)
                 case PAGE_USAGE_GENERAL_3:  t = "general3"; break;
                 case PAGE_USAGE_SLOBBY:     t = "slobby"; break;
                 case PAGE_USAGE_PT:         t = "pagetable"; break;
+                case PAGE_USAGE_THREAD:     t = "thread+stack"; break;
                 }
                 printf(" - %d (%d pages): %s\n", cur_pn, cur_num, t);
             }

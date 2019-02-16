@@ -21,9 +21,9 @@
  * Then you can e.g. insert elements like this:
  *
  *  struct example_item item;
- *  LL_APPEND(mylist, &mylist_var, &item);
+ *  LL_APPEND(&mylist_var, &item, mylist);
  *
- * The first macro argument is always the name if the field in the item that
+ * The last macro argument is usually the name if the field in the item that
  * contains the prev/next pointers, in this case struct example_item.mylist.
  * This was done so that a single item can be in multiple lists.
  *
@@ -41,7 +41,7 @@
 
 // Insert item at the end of the list (list->tail == item).
 // Undefined behavior if item is already in the list.
-#define LL_APPEND(field, list, item)  do {                              \
+#define LL_APPEND(list, item, field)  do {                              \
     (item)->field.prev = (list)->tail;                                  \
     (item)->field.next = NULL;                                          \
     LL_RELINK_(field, list, item)                                       \
@@ -50,7 +50,7 @@
 // Insert item enew after eprev (i.e. eprev->next == enew). If eprev is NULL,
 // then insert it as head (list->head == enew).
 // Undefined behavior if enew is already in the list, or eprev isn't.
-#define LL_INSERT_AFTER(field, list, eprev, enew) do {                  \
+#define LL_INSERT_AFTER(list, eprev, enew, field) do {                  \
     (enew)->field.prev = (eprev);                                       \
     (enew)->field.next = (eprev) ? (eprev)->field.next : (list)->head;  \
     LL_RELINK_(field, list, enew)                                       \
@@ -58,7 +58,7 @@
 
 // Insert item at the start of the list (list->head == item).
 // Undefined behavior if item is already in the list.
-#define LL_PREPEND(field, list, item)  do {                             \
+#define LL_PREPEND(list, item, field)  do {                             \
     (item)->field.prev = NULL;                                          \
     (item)->field.next = (list)->head;                                  \
     LL_RELINK_(field, list, item)                                       \
@@ -67,7 +67,7 @@
 // Insert item enew before enext (i.e. enew->next == enext). If enext is NULL,
 // then insert it as tail (list->tail == enew).
 // Undefined behavior if enew is already in the list, or enext isn't.
-#define LL_INSERT_BEFORE(field, list, enext, enew) do {                 \
+#define LL_INSERT_BEFORE(list, enext, enew, field) do {                 \
     (enew)->field.prev = (enext) ? (enext)->field.prev : (list)->tail;  \
     (enew)->field.next = (enext);                                       \
     LL_RELINK_(field, list, enew)                                       \
@@ -75,7 +75,7 @@
 
 // Remove the item from the list.
 // Undefined behavior if item is not in the list.
-#define LL_REMOVE(field, list, item) do {                               \
+#define LL_REMOVE(list, item, field) do {                               \
     if ((item)->field.prev) {                                           \
         (item)->field.prev->field.next = (item)->field.next;            \
     } else {                                                            \
@@ -89,7 +89,7 @@
 } while (0)
 
 // Remove all items from the list.
-#define LL_CLEAR(field, list) do {                                      \
+#define LL_CLEAR(list) do {                                             \
     (list)->head = (list)->tail = NULL;                                 \
 } while (0)
 

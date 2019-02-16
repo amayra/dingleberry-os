@@ -12,6 +12,13 @@
 
 #include <libinsanity/minmax.h>
 
+extern uint64_t timer_frequency;
+
+// Preliminary way to allocate kernel virtual memory space. Obviously this needs
+// to be replaced by something proper.
+extern void *virt_alloc_cur;
+extern void *virt_alloc_end;
+
 #define panic(...) do {                                                     \
     printf("%s:%d:%s: PANIC: ", __FILE__, __LINE__, __PRETTY_FUNCTION__);   \
     printf(__VA_ARGS__);                                                    \

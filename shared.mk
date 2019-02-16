@@ -8,7 +8,7 @@ WARN_CFLAGS = -Wall -Werror=format -Werror=implicit-function-declaration
 # One of the most important codegen options is -fno-PIE, which prevents gcc
 # from generating idiotic GOT relocations instead of pure PC-relative addressing.
 COMMON_CFLAGS = $(WARN_CFLAGS) -D_GNU_SOURCE \
-                -mabi=lp64 -fno-PIE -march=rv64imafd -mstrict-align \
+                -mabi=lp64 -fno-PIE -march=rv64imafdc -mstrict-align \
                 -isystem $(ROOT)/libc/include/ \
                 -isystem $(ROOT)/libc/musl/include/
 

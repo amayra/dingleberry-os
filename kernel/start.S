@@ -9,6 +9,10 @@
 
 .section ".init.text", "ax"
 
+    /* Note: entrypoint called by OpenSBI
+     *  a0: hartid
+     *  a1: FDT address
+     */
 .globl _start
 _start:
     /* Disable interrupts. (Linux does it too, so maybe it's needed.) */
@@ -92,6 +96,7 @@ change_to_virtual:
      * Note: a1 is saved from _start, and contains the address to the DTB (or
      *       NULL if unset). This is FW_JUMP_FDT_ADDR in OpenSBI, but no need
      *       to hardcode it. */
+    mv tp, zero
     la sp, boot_stack
     li t0, BOOT_STACK_SIZE
     add sp, sp, t0

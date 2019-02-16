@@ -72,7 +72,7 @@ void allocate_slobby_page(struct slob *slob)
     for (size_t n = 0; n < slob->num_per_slobby; n++)
         s->freemap[n  / 32] |= 1U << (n % 32);
 
-    LL_APPEND(slob_list, &slob->free_list, s);
+    LL_APPEND(&slob->free_list, s, slob_list);
 
     return;
 }
@@ -113,7 +113,7 @@ void *slob_allocz(struct slob *slob)
     s->num_free -= 1;
 
     if (!s->num_free)
-        LL_REMOVE(slob_list, &slob->free_list, s);
+        LL_REMOVE(&slob->free_list, s, slob_list);
 
     uint8_t *p = (uint8_t *)s + slob->meta_size - PAGE_SIZE;
     uint8_t *e = p + slob->element_size * index;
@@ -152,7 +152,7 @@ void slob_free(struct slob *slob, void *ptr)
     s->num_free += 1;
 
     if (s->num_free == 1)
-        LL_APPEND(slob_list, &slob->free_list, s);
+        LL_APPEND(&slob->free_list, s, slob_list);
 }
 
 void slob_free_unused(struct slob *slob)
@@ -165,7 +165,7 @@ void slob_free_unused(struct slob *slob)
     while (s) {
         struct slobby *next = s->slob_list.next;
         if (s->num_free == slob->num_per_slobby) {
-            LL_REMOVE(slob_list, &slob->free_list, s);
+            LL_REMOVE(&slob->free_list, s, slob_list);
 
             uint8_t *p = (uint8_t *)s + slob->meta_size - PAGE_SIZE;
 

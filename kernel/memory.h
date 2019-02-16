@@ -11,6 +11,8 @@
 #define PAGE_SHIFT              12
 #define PAGE_SIZE               (1 << PAGE_SHIFT)
 
+#define STACK_ALIGNMENT         16
+
 #define INVALID_PHY_ADDR        ((uint64_t)-1)
 
 // Usable virtual address bits.
