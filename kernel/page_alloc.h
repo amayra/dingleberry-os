@@ -18,6 +18,7 @@ enum page_usage {
     PAGE_USAGE_SLOBBY,
     PAGE_USAGE_PT,
     PAGE_USAGE_THREAD,
+    PAGE_USAGE_USER,
 
     // Invalid value
     PAGE_USAGE_COUNT

@@ -1,4 +1,5 @@
 #include <endian.h>
+#include <elf.h>
 
 #include "kernel.h"
 #include "memory.h"
@@ -23,6 +24,8 @@ extern char _ebss;
 uint64_t timer_frequency;
 void *virt_alloc_cur;
 void *virt_alloc_end;
+
+static uint64_t initrd_phys_start, initrd_phys_end;
 
 uint64_t read_timer_ticks(void)
 {
@@ -104,9 +107,21 @@ static void fdt_prop(char *node, char *prop, uint8_t *value, size_t size)
         printf("     '%s'\n", (char *)value);
     }
 
-    if (strcmp(node, "/cpus") == 0 && strcmp(prop, "timebase-frequency") == 0) {
-        assert(size >= 4); // we can trust devicetree, right?
+    if (strcmp(node, "/cpus") == 0 && strcmp(prop, "timebase-frequency") == 0)
         timer_frequency = betoh32(*(uint32_t *)value);
+
+    if (strcmp(node, "/chosen") == 0) {
+        if (strcmp(prop, "bootargs") == 0)
+            printf("     '%s'\n", (char *)value);
+
+        // How to do many things wrong with something extremely simple:
+        // - make separate properties
+        // - make them 32 bit only
+        // - don't use the standard reg property
+        if (strcmp(prop, "linux,initrd-start") == 0)
+            initrd_phys_start = betoh32(*(uint32_t *)value);
+        if (strcmp(prop, "linux,initrd-end") == 0)
+            initrd_phys_end = betoh32(*(uint32_t *)value);
     }
 }
 
@@ -199,7 +214,111 @@ static void fdt_parse(void *fdt)
     printf("Adding (missing?) OpenSBI reserved memory.\n");
     page_alloc_mark(0x80000000, 0x00200000, PAGE_USAGE_RESERVED);
 
+    if (initrd_phys_start != initrd_phys_end) {
+        page_alloc_mark(initrd_phys_start, initrd_phys_end - initrd_phys_start,
+                        PAGE_USAGE_RESERVED);
+    }
+
     printf("FDT end.\n");
+}
+
+// Load a userspace executable into the given address space.
+static void load_elf(void *elf, size_t elf_size, struct aspace *aspace,
+                     uintptr_t *out_entry)
+{
+    if ((uintptr_t)elf & 7)
+        panic("ELF loader input not aligned.\n");
+
+    if (elf_size < sizeof(Elf64_Ehdr))
+        panic("ELF file too small.\n");
+
+    Elf64_Ehdr *hdr = elf;
+
+    static const uint8_t elf_ident[] = {ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3,
+                                        ELFCLASS64, ELFDATA2LSB, EV_CURRENT};
+    if (memcmp(hdr->e_ident, elf_ident, sizeof(elf_ident)) != 0)
+        panic("Invalid/unsupported ELF header, endian, or bit size.\n");
+
+    if (hdr->e_type != ET_EXEC)
+        panic("Not an executable (static) ELF file.\n");
+
+    if (hdr->e_machine != EM_RISCV)
+        panic("ELF file is not RISC-V.\n");
+
+    if (!hdr->e_phoff)
+        panic("ELF file has no program headers.\n");
+
+    if (hdr->e_phoff + hdr->e_phnum * (uint64_t)hdr->e_phentsize > elf_size ||
+        hdr->e_phentsize < sizeof(Elf64_Phdr))
+        panic("ELF program headers out of bounds or invalid.\n");
+
+    for (size_t n = 0; n < hdr->e_phnum; n++) {
+        Elf64_Phdr *phdr =
+            (void *)((char *)elf + hdr->e_phoff + n * hdr->e_phentsize);
+
+        if (phdr->p_type != PT_LOAD)
+            continue;
+
+        // (This code is structured vaguely to support mmap() in the future.)
+        if ((phdr->p_offset % PAGE_SIZE) != (phdr->p_vaddr % PAGE_SIZE))
+            panic("ELF program header offsets not congruent.\n");
+
+        int mmu_flags = ((phdr->p_flags & 1) ? MMU_FLAG_X : 0) |
+                        ((phdr->p_flags & 2) ? MMU_FLAG_W : 0) |
+                        ((phdr->p_flags & 4) ? MMU_FLAG_R : 0);
+
+        if (phdr->p_offset > elf_size ||
+            elf_size < phdr->p_offset + phdr->p_filesz)
+        {
+            panic("ELF PHDR file data outside of file.\n");
+        }
+        uintptr_t offs_end = phdr->p_offset + phdr->p_filesz;
+        uintptr_t offs_a = phdr->p_offset & ~(uintptr_t)(PAGE_SIZE - 1);
+
+        uintptr_t vaddr_a = phdr->p_vaddr & ~(uintptr_t)(PAGE_SIZE - 1);
+
+        if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr)
+            panic("ELF PHDR virtual address overflow.\n");
+
+        // Including partial pages at start/end. (Is this code even correct...)
+        size_t num_pages = phdr->p_memsz / PAGE_SIZE +
+            ((phdr->p_memsz & (PAGE_SIZE - 1)) +
+             (phdr->p_vaddr & (PAGE_SIZE - 1)) + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        for (size_t n = 0; n < num_pages; n++) {
+            uintptr_t vaddr = vaddr_a + n * PAGE_SIZE;
+            uintptr_t offs = offs_a + n * PAGE_SIZE;
+
+            uint64_t phys = page_alloc_phy(1, PAGE_USAGE_USER);
+            if (phys == INVALID_PHY_ADDR)
+                panic("Out of memory while loading ELF program.\n");
+
+            // (This also fails if the ELF uses kernel addresses.)
+            if (!aspace_map(aspace, (void *)vaddr, phys, PAGE_SIZE, mmu_flags))
+                panic("Could not map ELF program page.\n");
+
+            void *page = page_phys_to_virt(phys);
+
+            if (offs < offs_end) {
+                size_t copy = PAGE_SIZE;
+
+                // (mmap() would fill partial mappings with zeros.)
+                copy = MIN(copy, offs_end - offs);
+
+                memcpy(page, (char *)elf + offs, copy);
+
+                // Zero out partial BSS. (It appears you would need to do this
+                // even with mmap(), because the section data can still be
+                // followed by further ELF data.)
+                if (copy < PAGE_SIZE)
+                    memset((char *)page + copy, 0, PAGE_SIZE - copy);
+            } else {
+                memset(page, 0, PAGE_SIZE);
+            }
+        }
+    }
+
+    *out_entry = hdr->e_entry;
 }
 
 static void map_kernel(void *addr, size_t size, int flags)
@@ -221,6 +340,57 @@ int rec(int x){
     return rec(x) + 1;
 }
 
+// The microkernel who parsed tar in the kernel.
+static void initrd_tar_next(size_t *pos, char **filename,
+                            void **data, size_t *size)
+{
+    *filename = NULL;
+    *data = NULL;
+    *size = 0;
+
+    size_t left = initrd_phys_end - initrd_phys_start - *pos;
+    if (left == 0)
+        return;
+
+    char *hdr = page_phys_to_virt(initrd_phys_start + *pos);
+    assert(hdr);
+
+    if (left < 512)
+        panic("Partial tar header.\n");
+
+    // Check for all-0 termination block.
+    char m = 0;
+    for (size_t n = 0; n < 512; n++)
+        m |= hdr[n];
+    if (!m)
+        return;
+
+    if (memcmp(&hdr[257], "ustar\0", 6) != 0)
+        panic("Invalid tar header signature.\n");
+
+    // (Valid in tar, but we rely on 0 termination.)
+    if (hdr[99])
+        panic("Filename too long.\n");
+
+    uint64_t esize = 0;
+    for (size_t n = 0; n < 12; n++) {
+        char c = hdr[124 + n];
+        if (!c)
+            break;
+        if (!(c >= '0' && c <= '7'))
+            panic("Invalid tar header '%d'.\n", c);
+        esize = (esize << 3) + (c - '0');
+    }
+
+    if (esize > left - 512)
+        panic("Invalid tar entry size.\n");
+
+    *pos += 512 + esize;
+    *filename = &hdr[0];
+    *data = hdr + 512;
+    *size = esize;
+}
+
 int boot_entry(uintptr_t fdt_phys)
 {
     printf("Booting with FDT at %p.\n", (void *)fdt_phys);
@@ -235,6 +405,10 @@ int boot_entry(uintptr_t fdt_phys)
 
     page_alloc_mark((uintptr_t)&_start - KERNEL_PHY_BASE, &_end - &_start,
                     PAGE_USAGE_KERNEL);
+
+    printf("initrd: %lx-%lx\n", (long)initrd_phys_start, (long)initrd_phys_end);
+    if (initrd_phys_start >= initrd_phys_end)
+        panic("No initrd set in FDT.\n");
 
     page_alloc_debug_dump();
 
@@ -319,40 +493,60 @@ int boot_entry(uintptr_t fdt_phys)
 
     page_alloc_debug_dump();
 
-    uint64_t useraddr = page_alloc_phy(1, PAGE_USAGE_GENERAL);
-    assert(useraddr != INVALID_PHY_ADDR);
-    extern char userspace_template;
-    void *uservirt_kernel = page_phys_to_virt(useraddr);
-    memcpy(uservirt_kernel, &userspace_template, PAGE_SIZE);
+    printf("initrd contents:\n");
+    size_t initrd_pos = 0;
+    void *root_elf = NULL;
+    size_t root_elf_size = 0;
+    while (1) {
+        char *filename;
+        void *data;
+        size_t size;
+        initrd_tar_next(&initrd_pos, &filename, &data, &size);
+        if (!filename)
+            break;
+
+        printf("  '%s' (%zd bytes)\n", filename, size);
+
+        if (strcmp(filename, "rootprocess") == 0) {
+            root_elf = data;
+            root_elf_size = size;
+        }
+    }
+
+    if (!root_elf)
+        panic("initrd rootprocess entry not found.\n");
+
     struct aspace *user_aspace = aspace_alloc();
-    assert(user_aspace);
-    void *uservirt = (void *)(uintptr_t)0x10000;
-    bool r = aspace_map(user_aspace, uservirt, useraddr, PAGE_SIZE,
-                        MMU_FLAG_R | MMU_FLAG_X);
-    assert(r);
-    //aspace_switch_to(user_aspace);
+    if (!user_aspace)
+        panic("Could not allocate user addressspace.\n");
 
-    //asm volatile("csrw sepc, %0" : : "r" (uservirt));
+    uintptr_t entrypoint;
+    load_elf(root_elf, root_elf_size, user_aspace, &entrypoint);
 
-    // And this is why we did all this crap.
-    printf("Hello world.\n");
+    // Create a stack at the end of the user address space.
+    size_t user_stack_size = PAGE_SIZE * 16;
+    uintptr_t user_stack =
+        (MMU_ADDRESS_LOWER_MAX & ~(uintptr_t)(PAGE_SIZE - 1)) -
+        PAGE_SIZE * 1024 - user_stack_size;
+    for (size_t n = 0; n < user_stack_size; n+= PAGE_SIZE) {
+        uint64_t phys = page_alloc_phy(1, PAGE_USAGE_USER);
+        if (phys == INVALID_PHY_ADDR)
+            panic("Out of memory while allocating user stack.\n");
+
+        if (!aspace_map(user_aspace, (void *)(user_stack + n), phys, PAGE_SIZE,
+                        MMU_FLAG_R | MMU_FLAG_W))
+            panic("Could not map user stack page.\n");
+
+        void *page = page_phys_to_virt(phys);
+        memset(page, 0, PAGE_SIZE);
+    }
+
+    page_alloc_debug_dump();
 
     asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
-    //struct thread tr;
-    //printf("sscratch=%p\n", &tr);
-    //asm volatile("csrw sscratch, %0" : : "r" (&tr));
 
-    // cause timer irq in 5 seconds
+    // cause timer irq in 3 seconds
     sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
-
-    //*(volatile int *)0xDEAD = 456; // fuck this world
-    //*(volatile int *)0xDEAD;
-    //asm volatile("jr %0" : : "r" (0xDEAC));
-    //asm volatile("ebreak");
-    //asm volatile("ecall"); randomly calls into firmware
-    //rec(1);
-
-    //asm volatile("sret"); // return to userspace
 
     extern void trap(void);
     asm volatile("csrw stvec, %[tr]\n"
@@ -363,13 +557,13 @@ int boot_entry(uintptr_t fdt_phys)
 
     struct asm_regs regs = {0};
     regs.status = 1 << 1;
-    regs.pc = (uintptr_t)uservirt;
+    regs.regs[2] = user_stack + user_stack_size;
+    regs.pc = entrypoint;
     struct thread *ut = thread_create(user_aspace,  &regs);
     assert(ut);
     thread_switch_to(ut);
 
     //threads_init();
 
-    while(1)
-        asm volatile("wfi");
+    panic("unreachable\n");
 }

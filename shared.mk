@@ -9,7 +9,8 @@ WARN_CFLAGS = -Wall -Werror=format -Werror=implicit-function-declaration
 # from generating idiotic GOT relocations instead of pure PC-relative addressing.
 COMMON_CFLAGS = $(WARN_CFLAGS) -D_GNU_SOURCE \
                 -mabi=lp64 -fno-PIE -march=rv64imafdc -mstrict-align \
-                -isystem $(ROOT)/libc/include/ \
-                -isystem $(ROOT)/libc/musl/include/
+                -fno-builtin-printf \
+                -isystem shared/include_sys/ \
+                -isystem shared/musl/include/
 
-MUSL = $(ROOT)/libc/musl
+MUSL = shared/musl

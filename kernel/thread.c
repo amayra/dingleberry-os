@@ -252,7 +252,6 @@ static void show_crash(struct asm_regs *ctx)
 
 void c_trap(struct asm_regs *ctx)
 {
-    printf("user or kernel IRQ\n");
     show_crash(ctx);
 
 

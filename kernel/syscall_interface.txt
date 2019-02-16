@@ -8,9 +8,9 @@ Syscall ABI
 -----------
 
 ecall is used for syscall entry. Unlike the SBI and other kernels (such as
-Linux), this does not save all registers, but follows the RISC-V ELF psABI.
-In addition, a7 is used to pass the syscall number, and ra is callee (i.e.
-kernel) saved.
+Linux), this does not save all registers, but follows the RISC-V ELF psABI for
+procedure calls. In addition, a7 is used to pass the syscall number, and ra is
+callee (i.e. kernel) saved.
 
 Preserved/immutable: zero, ra, sp, gp, tp, s0-s11
 Syscall number (not preserved): a7
@@ -29,3 +29,6 @@ get_timer_freq (0):
 debug_write_char (1):
     Write an ASCII character given by the 8 LSB in the first argument to the
     debug console.
+
+debug_stop (2):
+    Make the world end.

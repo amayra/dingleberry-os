@@ -2,6 +2,6 @@
 /trash/
 *.o
 *.d
-/kernel/kernel.bin
-/kernel/kernel.elf
-/kernel/kernel.ld
+/kernel/build/
+/rootprocess/build/
+/initrd.tar

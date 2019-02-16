@@ -5,8 +5,6 @@
 /* Arbitrary value used to verify addressing. */
 #define MAGIC 0x68104e9b
 
-#define BOOT_STACK_SIZE (PAGE_SIZE * 4)
-
 .section ".init.text", "ax"
 
     /* Note: entrypoint called by OpenSBI
@@ -97,9 +95,7 @@ change_to_virtual:
      *       NULL if unset). This is FW_JUMP_FDT_ADDR in OpenSBI, but no need
      *       to hardcode it. */
     mv tp, zero
-    la sp, boot_stack
-    li t0, BOOT_STACK_SIZE
-    add sp, sp, t0
+    la sp, boot_stack_end
     mv a0, a1
     mv ra, zero
     jal boot_entry
@@ -135,5 +131,8 @@ magic:
 .section ".bss..page_aligned", "w"
 .align PAGE_SHIFT
 
-    .lcomm boot_page_dir, PAGE_SIZE
-    .lcomm boot_stack, PAGE_SIZE * 8
+boot_stack:
+    .skip PAGE_SIZE * 8
+boot_stack_end:
+boot_page_dir:
+    .skip PAGE_SIZE

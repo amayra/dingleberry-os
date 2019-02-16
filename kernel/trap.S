@@ -1,7 +1,5 @@
 #include "memory.h"
 
-#define EMERGENCY_TRAP_SIZE PAGE_SIZE
-
 /* Offsets/sizes for struct asm_regs. */
 #define ASM_REGS_SIZE   (32 * 8 + 6 * 8)
 #define ASM_REGS_REGS   (0 * 8)
@@ -28,6 +26,7 @@
 syscall_vec:
     .dword syscall_get_timer_freq
     .dword syscall_debug_write_char
+    .dword syscall_debug_stop
 syscall_vec_end:
     /* This dumb POS of an assembler apparently requires this redundant .set */
     .set syscall_vec_size, syscall_vec_end - syscall_vec
@@ -196,9 +195,7 @@ kernel_trap:
 
     /* Use a special stack in case it was a stack overflow.
      * Would  need to be per-CPU on SMP systems (or stop all CPUs before). */
-    la sp, emergency_trap_stack
-    li a1, EMERGENCY_TRAP_SIZE
-    add sp, sp, a1
+    la sp, emergency_trap_stack_end
 
     j generic_trap
 
@@ -315,4 +312,6 @@ userspace_template:
 .section ".bss..page_aligned", "w"
 .align PAGE_SHIFT
 
-    .lcomm emergency_trap_stack, EMERGENCY_TRAP_SIZE
+emergency_trap_stack:
+    .skip PAGE_SIZE
+emergency_trap_stack_end:

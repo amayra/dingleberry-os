@@ -1,14 +1,14 @@
 include ../shared.mk
 
-ROOT=..
+BUILD = build
 
 CFLAGS = $(COMMON_CFLAGS) -nostartfiles -nodefaultlibs -nostdlib -nostdinc -ffreestanding -mno-save-restore -mcmodel=medany -mexplicit-relocs -mno-relax -MD -MP -Os -g  -ggdb
 
-LDFLAGS = -T kernel.ld -melf64lriscv
+LDFLAGS = -T $(BUILD)/kernel.ld -melf64lriscv
 
 OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o mmu.o trap.o \
-	  syscalls.o thread.o \
-          $(ROOT)/libc/libinsanity/printf.o \
+          syscalls.o thread.o \
+          shared/libinsanity/printf.o \
           $(MUSL)/src/string/memcpy.o \
           $(MUSL)/src/string/memmove.o \
           $(MUSL)/src/string/memset.o \
@@ -17,29 +17,34 @@ OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o mmu.o trap.o \
           $(MUSL)/src/string/strlen.o \
           $(MUSL)/src/string/strncmp.o \
 
-DEP_FILES = $(OBJECTS:.o=.d) kernel.d
+BUILD_TARGET = $(addprefix $(BUILD)/, $(TARGET))
+BUILD_OBJECTS = $(addprefix $(BUILD)/, $(OBJECTS))
+BUILD_DEPS = $(BUILD_OBJECTS:.o=.d) $(BUILD)/kernel.d
 
-all: kernel.bin
+all: $(BUILD)/kernel.bin
 
 clean:
-	rm -f kernel.elf kernel.bin kernel.ld $(OBJECTS) $(DEP_FILES)
+	rm -rf $(BUILD)
 
-%.o: %.c
+$(BUILD)/%.o: %.c
+	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-%.o: %.S
+$(BUILD)/%.o: %.S
+	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-kernel.ld: kernel.ld.S
+$(BUILD)/kernel.ld: kernel.ld.S
+	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -E -P -g0 -DIN_LINKERSCRIPT -c -o $@ $<
 
-kernel.elf: $(OBJECTS) kernel.ld
-	$(LD) $(LDFLAGS) -o $@ --start-group $(OBJECTS) --end-group
+$(BUILD)/kernel.elf: $(BUILD_OBJECTS) $(BUILD)/kernel.ld
+	$(LD) $(LDFLAGS) -o $@ --start-group $(BUILD_OBJECTS) --end-group
 
-kernel.bin: kernel.elf
+$(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	# (Allocating the zeros will make sure BSS is cleared. Needs a little
 	# less ASM. If anyone knows where Linux/RISC-V clears this when OpenSBI
 	# is used, please call me.)
 	$(OBJCOPY) -O binary --set-section-flags .bss=alloc,load,contents $< $@
 
--include $(DEP_FILES)
+-include $(BUILD_DEPS)

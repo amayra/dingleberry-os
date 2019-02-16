@@ -19,3 +19,8 @@ size_t syscall_unavailable(size_t nr)
     printf("Unknown syscall %"PRIu64".\n", nr);
     return -1;
 }
+
+void syscall_debug_stop(void)
+{
+    panic("User stop.\n");
+}

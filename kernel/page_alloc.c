@@ -152,6 +152,7 @@ static bool check_usage(enum page_usage usage)
     case PAGE_USAGE_SLOBBY:
     case PAGE_USAGE_PT:
     case PAGE_USAGE_THREAD:
+    case PAGE_USAGE_USER:
         return true;
     default:
         return false;
@@ -278,6 +279,7 @@ void page_alloc_debug_dump(void)
                 case PAGE_USAGE_SLOBBY:     t = "slobby"; break;
                 case PAGE_USAGE_PT:         t = "pagetable"; break;
                 case PAGE_USAGE_THREAD:     t = "thread+stack"; break;
+                case PAGE_USAGE_USER:       t = "user"; break;
                 }
                 printf(" - %d (%d pages): %s\n", cur_pn, cur_num, t);
             }
