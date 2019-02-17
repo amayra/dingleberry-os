@@ -1,8 +1,6 @@
 include ../shared.mk
 
-BUILD = build
-
-CFLAGS = $(COMMON_CFLAGS) -nostartfiles -nodefaultlibs -nostdlib -nostdinc -MD -MP -Os -g  -ggdb -static
+CFLAGS = $(COMMON_CFLAGS) -Xlinker -zseparate-code -Xlinker -Ttext=0x200000 -Xlinker --build-id=none
 
 OBJECTS = crt.o main.o \
           shared/libinsanity/printf.o \

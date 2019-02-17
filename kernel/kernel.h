@@ -19,6 +19,8 @@ extern uint64_t timer_frequency;
 extern void *virt_alloc_cur;
 extern void *virt_alloc_end;
 
+uint64_t read_timer_ticks(void);
+
 #define panic(...) do {                                                     \
     printf("%s:%d:%s: PANIC: ", __FILE__, __LINE__, __PRETTY_FUNCTION__);   \
     printf(__VA_ARGS__);                                                    \

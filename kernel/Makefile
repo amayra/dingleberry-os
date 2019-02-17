@@ -1,8 +1,6 @@
 include ../shared.mk
 
-BUILD = build
-
-CFLAGS = $(COMMON_CFLAGS) -nostartfiles -nodefaultlibs -nostdlib -nostdinc -ffreestanding -mno-save-restore -mcmodel=medany -mexplicit-relocs -mno-relax -MD -MP -Os -g  -ggdb
+CFLAGS = $(COMMON_CFLAGS) -ffreestanding -mno-save-restore -mcmodel=medany -mexplicit-relocs -mno-relax
 
 LDFLAGS = -T $(BUILD)/kernel.ld -melf64lriscv
 

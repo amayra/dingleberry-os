@@ -35,8 +35,14 @@ struct thread *thread_create_kernel(void (*thread)(void *ctx), void *ctx);
 // Return current kernel thread.
 struct thread *thread_current(void);
 
+// Return the thread's aspace.
+struct aspace *thread_get_aspace(struct thread *t);
+
 // Cooperative context switch.
 void thread_switch_to(struct thread *t);
+
+// Schedule next thread to run.
+void thread_reschedule(void);
 
 // Disable interrupt trap. Returns whether it was enabled before.
 bool ints_disable(void);
@@ -47,5 +53,4 @@ void ints_restore(bool ints_disable_return_value);
 // Enable interrupt trap.
 void ints_enable(void);
 
-// (This also switches away from initial kernel stack/"thread".)
-void threads_init(void);
+void threads_init(void (*boot_handler)(void));

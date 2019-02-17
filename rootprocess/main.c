@@ -68,11 +68,49 @@ _Noreturn void __assert_fail(const char *expr, const char *file, int line,
     abort();
 }
 
+static void other_thread(void)
+{
+    printf("other thread\n");
+    while (1) {
+        asm volatile("wfi");
+        printf("wfi wakeup (thread2)\n");
+    }
+}
+
+void thread_cr(void)
+{
+    static char stack[4096];
+
+    register uintptr_t a0 asm("a0") = (uintptr_t)other_thread;
+    register uintptr_t a1 asm("a1") = (uintptr_t)(stack + sizeof(stack));
+    register uintptr_t a2 asm("a2") = 0;
+    register uintptr_t a7 asm("a7") = 3; // thread_create
+    asm volatile("ecall"
+        : "=r" (a0),                                // clobber a0
+          "=r" (a1),                                // clobber a1
+          "=r" (a2),                                // clobber a2
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a1),
+          "r" (a2),
+          "r" (a7)
+        : "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+}
 
 int main(void)
 {
     // And this is why we did all this crap.
     printf("Hello world! (From userspace.)\n");
-    asm volatile("wfi");
+
+    //*(volatile int *)0xdeadbeefd00dull=123;
+
+    thread_cr();
+
+    while (1) {
+        asm volatile("wfi");
+        printf("wfi wakeup (thread1)\n");
+    }
     return 0;
 }

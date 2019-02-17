@@ -27,6 +27,8 @@ void *virt_alloc_end;
 
 static uint64_t initrd_phys_start, initrd_phys_end;
 
+static void continue_boot(void);
+
 uint64_t read_timer_ticks(void)
 {
     uint64_t r;
@@ -336,10 +338,6 @@ static void map_kernel(void *addr, size_t size, int flags)
         panic("Could not establish kernel mapping.\n");
 }
 
-int rec(int x){
-    return rec(x) + 1;
-}
-
 // The microkernel who parsed tar in the kernel.
 static void initrd_tar_next(size_t *pos, char **filename,
                             void **data, size_t *size)
@@ -393,6 +391,14 @@ static void initrd_tar_next(size_t *pos, char **filename,
 
 int boot_entry(uintptr_t fdt_phys)
 {
+    size_t sstatus;
+    asm volatile("csrr %0, sstatus" : "=r" (sstatus));
+    printf("Boot sstatus: 0x%zx\n", sstatus);
+
+    asm volatile("csrw sstatus, %0" : : "r" ((2ULL << 32) | 0x80000));
+    asm volatile("csrr %0, sstatus" : "=r" (sstatus));
+    printf("New sstatus: 0x%zx\n", sstatus);
+
     printf("Booting with FDT at %p.\n", (void *)fdt_phys);
     if (!fdt_phys)
         panic("Bootloader provided no FDT.\n");
@@ -478,7 +484,7 @@ int boot_entry(uintptr_t fdt_phys)
         bool r = aspace_map(aspace_get_kernel(), virt, addr, size,
                             MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X);
         if (!r)
-            panic("Could create virtual mapping for entire RAM.\n");
+            panic("Could not create virtual mapping for entire RAM.\n");
     }
 
     // Mapping the same page multiple times fully overwrites the previous
@@ -486,13 +492,23 @@ int boot_entry(uintptr_t fdt_phys)
     map_kernel(&_stext,     &_etext - &_stext,      MMU_FLAG_R | MMU_FLAG_X);
     map_kernel(&_sdata,     &_edata - &_sdata,      MMU_FLAG_R | MMU_FLAG_W);
     map_kernel(&_sbss,      &_ebss - &_sbss,        MMU_FLAG_R | MMU_FLAG_W);
-    map_kernel(&_srodata,   &_erodata - &_srodata,  MMU_FLAG_R | MMU_FLAG_X);
+    map_kernel(&_srodata,   &_erodata - &_srodata,  MMU_FLAG_R);
+
+    page_alloc_debug_dump();
 
     // Switch away from the boot page table.
     aspace_switch_to(aspace_get_kernel());
 
-    page_alloc_debug_dump();
+    // Switch to a proper kernel thread, which calls the given function to
+    // continue booting. This also switches away from the boot stack, and sets
+    // up a proper crash handler.
+    threads_init(continue_boot);
 
+    panic("unreachable\n");
+}
+
+static void continue_boot(void)
+{
     printf("initrd contents:\n");
     size_t initrd_pos = 0;
     void *root_elf = NULL;
@@ -505,7 +521,7 @@ int boot_entry(uintptr_t fdt_phys)
         if (!filename)
             break;
 
-        printf("  '%s' (%zd bytes)\n", filename, size);
+        printf("  - '%s' (%zd bytes)\n", filename, size);
 
         if (strcmp(filename, "rootprocess") == 0) {
             root_elf = data;
@@ -548,22 +564,13 @@ int boot_entry(uintptr_t fdt_phys)
     // cause timer irq in 3 seconds
     sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
 
-    extern void trap(void);
-    asm volatile("csrw stvec, %[tr]\n"
-        :
-        : [tr] "r" (trap),
-          [sc] "r" (0)
-        : "memory");
-
     struct asm_regs regs = {0};
     regs.status = 1 << 1;
     regs.regs[2] = user_stack + user_stack_size;
     regs.pc = entrypoint;
     struct thread *ut = thread_create(user_aspace,  &regs);
     assert(ut);
-    thread_switch_to(ut);
 
-    //threads_init();
-
-    panic("unreachable\n");
+    printf("user thread: %p\n", ut);
+    printf("current thread: %p\n", thread_current());
 }

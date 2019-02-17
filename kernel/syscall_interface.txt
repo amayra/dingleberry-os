@@ -32,3 +32,10 @@ debug_write_char (1):
 
 debug_stop (2):
     Make the world end.
+
+thread_create (3):
+    Create a new thread. Basic toy-like functionality, so don't say anything.
+
+    arg0: PC
+    arg1: SP
+    arg2: TP

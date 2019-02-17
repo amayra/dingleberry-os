@@ -2,6 +2,7 @@
 #include "linked_list.h"
 #include "mmu.h"
 #include "mmu_internal.h"
+#include "opensbi.h"
 #include "page_alloc.h"
 #include "thread.h"
 
@@ -13,9 +14,6 @@ void trap_return(void);
 static struct {
     struct thread *head, *tail;
 } all_threads;
-
-// (For simpler asm.)
-static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
 
 // Represents a kernel or user mode thread. (User mode threads always imply a
 // kernel thread.)
@@ -66,6 +64,7 @@ struct thread {
 } __attribute__((aligned(STACK_ALIGNMENT)));
 
 // (For simpler asm.)
+static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
 static_assert(!(sizeof(struct thread) & (STACK_ALIGNMENT - 1)), "");
 
 struct thread *thread_create(struct aspace *aspace, struct asm_regs *init_regs)
@@ -113,8 +112,9 @@ struct thread *thread_create(struct aspace *aspace, struct asm_regs *init_regs)
         ctx->regs[2] = (uintptr_t)t;            // sp
         ctx->regs[3] = (uintptr_t)t->kernel_gp; // gp
         ctx->regs[4] = (uintptr_t)t;            // tp
-        ctx->status = (1 << 8);                 // set to SPP (kernel mode)
+        ctx->status = (1 << 8);                 // set SPP (kernel mode)
     }
+    ctx->status |= (2ULL << 32) | 0x80000;
 
     LL_APPEND(&all_threads, t, all_threads);
     LL_APPEND(&aspace->owners, t, aspace_siblings);
@@ -136,11 +136,26 @@ struct thread *thread_create_kernel(void (*thread)(void *ctx), void *ctx)
     return thread_create(aspace_get_kernel(), &regs);
 }
 
+struct aspace *thread_get_aspace(struct thread *t)
+{
+    return t->aspace;
+}
+
 struct thread *thread_current(void)
 {
     struct thread *t;
     asm("mv %0, tp" : "=r" (t));
     return t;
+}
+
+void thread_reschedule(void)
+{
+    struct thread *cur = thread_current();
+    struct thread *next = cur->all_threads.next;
+    if (!next)
+        next = all_threads.head;
+
+    thread_switch_to(next);
 }
 
 bool ints_disable(void)
@@ -171,22 +186,27 @@ void thread_switch_to(struct thread *t)
 {
     aspace_switch_to(t->aspace);
 
-    // Actual context switch. Note that we force the compiler to save the
+    // Set time slice for thread t. We don't actually know at which places
+    // we return from userspace (different entrypoints like syscalls, IRQ, and
+    // newly created threads), so do it here.
+    // for now cause timer irq in 1 second
+    sbi_set_timer(read_timer_ticks() + timer_frequency * 1);
+
+    // Actual context switch.
+    // Shitty detail about savinf registes: we force the compiler to save the
     // callee-saved registers for us (although there are no advantages to do
     // this). We list _all_ registers as being clobbered, except zero,
     // sp/gp/tp, and ra. ra is used for the only "r" constraint and is clobbered
     // by being a dummy output.
-    asm volatile("beqz tp, 1f\n"
-                 "sd sp, (%[o_sp])(tp)\n"
-                 "la a0, 2f\n"
+    asm volatile("sd sp, (%[o_sp])(tp)\n"
+                 "la a0, 1f\n"
                  "sd a0, (%[o_pc])(tp)\n"
-                 "1:\n"
                  "mv tp, %[t]\n"
                  "ld sp, (%[o_sp])(tp)\n"
                  "ld a0, (%[o_pc])(tp)\n"
                  "csrw sscratch, tp\n"
                  "jr a0\n"
-                 "2:\n"
+                 "1:\n"
         : "=r" (t) // clobbered
         : [t] "0" (t),
           [o_sp] "i" (offsetof(struct thread, kernel_sp)),
@@ -198,11 +218,8 @@ void thread_switch_to(struct thread *t)
           "memory");
 }
 
-// Unexpected exception or interrupt.
-static void show_crash(struct asm_regs *ctx)
+static void show_regs(struct asm_regs *ctx)
 {
-    printf("\n");
-    printf("Oh no! This shit just crashed.\n");
     printf("\n");
     printf("SP:         %016zx\n", ctx->regs[2]);
     printf("sepc:       %016zx\n", ctx->pc);
@@ -211,6 +228,33 @@ static void show_crash(struct asm_regs *ctx)
     printf("sip:        %016zx\n", ctx->ip);
     printf("sstatus:    %016zx\n", ctx->status);
     printf("\n");
+
+    static const char regnames[32][5] = {
+        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1",
+        "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4",
+        "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"
+    };
+
+    for (size_t n = 0; n < 32; n += 2) {
+        if (!ctx->regs[n + 0] && !ctx->regs[n + 1])
+            continue;
+        printf("%-4s   %016zx  ", regnames[n + 0], ctx->regs[n + 0]);
+        printf("%-4s   %016zx\n", regnames[n + 1], ctx->regs[n + 1]);
+    }
+
+    printf("\n");
+}
+
+// Unexpected exception or interrupt.
+static void show_crash(struct asm_regs *ctx)
+{
+    printf("\n");
+    printf("Oh no! This shit just crashed.\n");
+
+    show_regs(ctx);
+
+    printf("Thread: %p\n", thread_current());
+    printf("Context: %p\n", ctx);
 
     uint64_t exc_code = ctx->cause & ((1ULL << 63) - 1);
     const char *cause = "?";
@@ -231,13 +275,13 @@ static void show_crash(struct asm_regs *ctx)
         case 3: cause = "breakpoint"; break;
         case 4: cause = "load misaligned"; break;
         case 5: cause = "load access"; break;
-        case 6: cause = "store/AMO misaligned"; break;
-        case 7: cause = "load/AMO misaligned"; break;
+        case 6: cause = "store misaligned"; break;
+        case 7: cause = "load misaligned"; break;
         case 8: cause = "user ecall"; break;
         case 9: cause = "super ecall"; break;
         case 12: cause = "instruction page fault"; break;
         case 13: cause = "load page fault"; break;
-        case 15: cause = "store/AMO page fault"; break;
+        case 15: cause = "store page fault"; break;
         }
     }
     printf("Cause: %s\n", cause);
@@ -252,37 +296,43 @@ static void show_crash(struct asm_regs *ctx)
 
 void c_trap(struct asm_regs *ctx)
 {
-    show_crash(ctx);
-
-
-    /*
-    if (ctx->cause & (1ULL << 63)) {
-        sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
+    if (ctx->cause == ((1ULL << 63) | 5)) {
+        printf("timer IRQ\n");
+        thread_reschedule();
     } else {
-        */
-}
-
-static void post_init_threading(void)
-{
-    asm volatile("csrw stvec, %[tr]\n"
-        :
-        : [tr] "r" (trap),
-          [sc] "r" (0)
-        : "memory");
+        show_crash(ctx);
+    }
 }
 
 static void idle_thread(void *ctx)
 {
-    post_init_threading();
+    void (*boot_handler)(void) = ctx;
+    boot_handler();
+
+    // This is bullshit of course.
+    while (1)
+        thread_reschedule();
 
     ints_enable();
     while (1)
         asm volatile("wfi");
 }
 
-void threads_init(void)
+void threads_init(void (*boot_handler)(void))
 {
-    struct thread *t = thread_create_kernel(idle_thread, NULL);
+    // Set a dummy tp while we're switching to new thread. This gives the trap
+    // handler a chance to catch kernel exceptions until a real thread pointer
+    // is setup properly.
+    struct thread dummy = {0};
+    asm volatile("csrw sscratch, %[tp]\n"
+                 "mv tp, %[tp]\n"
+                 "csrw stvec, %[tr]\n"
+        :
+        : [tr] "r" (trap),
+          [tp] "r" (&dummy)
+        : "memory");
+
+    struct thread *t = thread_create_kernel(idle_thread, boot_handler);
     if (!t)
         panic("Could not create idle thread.\n");
     thread_switch_to(t);

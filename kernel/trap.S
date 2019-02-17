@@ -18,8 +18,6 @@
 #define THREAD_SYSCALL_TP   (5 * 8)
 #define THREAD_SYSCALL_PC   (6 * 8)
 #define THREAD_KERNEL_GP    (7 * 8)
-#define THREAD_KERNEL_SP    (8 * 8)
-#define THREAD_KERNEL_PC    (9 * 8)
 
 .section ".rodata", "a"
 
@@ -27,6 +25,7 @@ syscall_vec:
     .dword syscall_get_timer_freq
     .dword syscall_debug_write_char
     .dword syscall_debug_stop
+    .dword syscall_thread_create
 syscall_vec_end:
     /* This dumb POS of an assembler apparently requires this redundant .set */
     .set syscall_vec_size, syscall_vec_end - syscall_vec
@@ -129,6 +128,7 @@ trap:
     li t0, syscall_vec_num
     bltu a7, t0, 1f
     la t0, syscall_unavailable
+    mv a0, a7
     j 2f
 1:
     slli a7, a7, 3
@@ -214,6 +214,9 @@ generic_trap:
     addi sp, sp, -ASM_REGS_SIZE
     ALL_REGS_LS(sd, ASM_REGS_REGS, sp)
 
+    /* Pointless, but reduces confusion. */
+    sd zero, (ASM_REGS_REGS + 0 * 8)(sp) /* x0 (zero) */
+
     /* Store the earlier awkwardly saved values to the proper location. */
     ld a0, (THREAD_SCRATCH_SP)(tp)
     sd a0, (ASM_REGS_REGS +  2 * 8)(sp) /* x2 (sp) */
@@ -253,64 +256,8 @@ trap_return:
 
     sret
 
-#if 0
-
-/* Load/Store operation for C ABI callee-saved registers. */
-#define CALLEE_SAVED_LS(INS)    \
-    INS s0,  (0  * 8)(sp);      \
-    INS s1,  (1  * 8)(sp);      \
-    INS s2,  (2  * 8)(sp);      \
-    INS s3,  (3  * 8)(sp);      \
-    INS s4,  (4  * 8)(sp);      \
-    INS s5,  (5  * 8)(sp);      \
-    INS s6,  (6  * 8)(sp);      \
-    INS s7,  (7  * 8)(sp);      \
-    INS s8,  (8  * 8)(sp);      \
-    INS s9,  (9  * 8)(sp);      \
-    INS s10, (10 * 8)(sp);      \
-    INS s11, (11 * 8)(sp);
-
-.globl thread_switch_to_lowlevel
-thread_switch_to_lowlevel:
-    /* Special case for switching to initial thread, where don't store the
-     * current "thread"'s state anywhere. */
-    beqz tp, 1f
-    /* Save state specific to this function. */
-    addi sp, sp, 13 * 8
-    CALLEE_SAVED_LS(sd)
-    sd ra, (12 * 8)(sp)
-    /* Save thread state. */
-    sd sp, (THREAD_KERNEL_SP)(tp)
-    la t0, 2f
-    sd t0, (THREAD_KERNEL_PC)(tp)
-1:
-    /* Switch to the thread. */
-    mv tp, a0
-    ld sp, (THREAD_KERNEL_SP)(tp)
-    ld t0, (THREAD_KERNEL_PC)(tp)
-    jr t0
-2:
-    /* Normal target PC set by this function. The target PC is only rarely set
-     * to anything else. */
-    CALLEE_SAVED_LS(ld)
-    ld ra, (12 * 8)(sp)
-    addi sp, sp, -13 * 8
-    ret
-#endif
-
-.balign 4096
-.globl userspace_template
-userspace_template:
-    //ecall
-    //wfi
-    li a0, 'C'
-    li a7, 1
-    ecall
-    j userspace_template
-.balign 4096
-
 .section ".bss..page_aligned", "w"
-.align PAGE_SHIFT
+.balign PAGE_SIZE
 
 emergency_trap_stack:
     .skip PAGE_SIZE

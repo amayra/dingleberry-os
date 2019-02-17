@@ -129,7 +129,7 @@ magic:
     .word MAGIC
 
 .section ".bss..page_aligned", "w"
-.align PAGE_SHIFT
+.balign PAGE_SIZE
 
 boot_stack:
     .skip PAGE_SIZE * 8

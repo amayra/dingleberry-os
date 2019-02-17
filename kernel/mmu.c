@@ -32,6 +32,11 @@ static struct {
     struct aspace *head, *tail;
 } all_aspaces;
 
+static void flush_tlb_all(void)
+{
+    asm volatile("sfence.vma zero" : : : "memory");
+}
+
 static void sync_with_kernel_aspace(struct aspace *aspace)
 {
     if (aspace == kernel_aspace)
@@ -41,8 +46,11 @@ static void sync_with_kernel_aspace(struct aspace *aspace)
     uint64_t *pt = page_phys_to_virt(aspace->root_pt);
 
     for (size_t n = 256; n < 512; n++) {
-        // Should probably flush TLBs for existing entries that were changed.
-        pt[n] = kpt[n];
+        if (pt[n] != kpt[n]) {
+            pt[n] = kpt[n];
+            // (Unnecessary if only A/D bits were changed.)
+            flush_tlb_all();
+        }
     }
 }
 
@@ -157,8 +165,8 @@ static bool write_pt(struct aspace *aspace, uint64_t virt, uint64_t pte,
     assert(pt);
     size_t entry = MMU_PTE_INDEX(virt, MMU_NUM_LEVELS - 1);
     pt[entry] = pte;
-    // TODO: TLB shootdown
-    asm volatile("sfence.vma zero" : : : "memory");
+
+    flush_tlb_all();
 
     return true;
 }
@@ -231,8 +239,6 @@ void aspace_switch_to(struct aspace* aspace)
 {
     // Mode 9 = Sv48.
     uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(aspace->root_pt);
-    asm volatile("csrw satp, %0 ; sfence.vma zero"
-        : "=r" (satp)
-        : "0" (satp)
-        : "memory");
+    asm volatile("csrw satp, %0" : : "r" (satp) : "memory");
+    flush_tlb_all();
 }
