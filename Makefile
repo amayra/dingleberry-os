@@ -11,4 +11,4 @@ clean:
 	rm -f initrd.tar
 
 qemu: build-all
-	./qemu.sh
+	./qemu-run.sh
