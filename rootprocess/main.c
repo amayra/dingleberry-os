@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <kernel/syscalls.h>
+
 #include <libinsanity/printf.h>
 
 int foo[4097];
@@ -21,7 +23,7 @@ void debug_printchar(char c)
     register uintptr_t r asm("a0") = c;
     asm volatile("li a7, %[id] ; ecall"
         : "=r" (r)                                  // clobber a0
-        : [id]"i" (1), "r" (r)                      // debug_write_char
+        : [id]"i" (SYS_DEBUG_WRITE_CHAR), "r" (r)
         : "a1", "a2", "a3", "a4", "a5", "a6", "a7",
           "t0", "t1", "t2", "t3", "t4", "t5", "t6",
           "memory");
@@ -84,7 +86,7 @@ void thread_cr(void)
     register uintptr_t a0 asm("a0") = (uintptr_t)other_thread;
     register uintptr_t a1 asm("a1") = (uintptr_t)(stack + sizeof(stack));
     register uintptr_t a2 asm("a2") = 0;
-    register uintptr_t a7 asm("a7") = 3; // thread_create
+    register uintptr_t a7 asm("a7") = SYS_THREAD_CREATE;
     asm volatile("ecall"
         : "=r" (a0),                                // clobber a0
           "=r" (a1),                                // clobber a1
@@ -103,6 +105,16 @@ int main(void)
 {
     // And this is why we did all this crap.
     printf("Hello world! (From userspace.)\n");
+
+    register uintptr_t a0 asm("a0") = 0;
+    register uintptr_t a7 asm("a7") = SYS_GET_TIMER_FREQ;
+    asm volatile("ecall"
+        : "=r" (a0), "=r" (a7)
+        : "r" (a0), "r" (a7)
+        : "a1", "a2", "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+    printf("timer freq: %zd\n", a0);
 
     //*(volatile int *)0xdeadbeefd00dull=123;
 

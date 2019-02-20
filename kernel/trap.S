@@ -19,19 +19,8 @@
 #define THREAD_SYSCALL_PC   (6 * 8)
 #define THREAD_KERNEL_GP    (7 * 8)
 
-.section ".rodata", "a"
-
-syscall_vec:
-    .dword syscall_get_timer_freq
-    .dword syscall_debug_write_char
-    .dword syscall_debug_stop
-    .dword syscall_thread_create
-syscall_vec_end:
-    /* This dumb POS of an assembler apparently requires this redundant .set */
-    .set syscall_vec_size, syscall_vec_end - syscall_vec
-    /* But it wasn't enough of a fucking POS yet: this is the opposite, and
-     * doesn't work with .set, only directly at the place of use. */
-#define syscall_vec_num (syscall_vec_size / 8)
+/* Number of entries in syscall_table[]. */
+#define ASM_SYSCALL_COUNT   4
 
 /* Load/Store operation for all registers, _except_ sp (x2) and tp (x4). */
 #define ALL_REGS_LS(INS, BASE, BREG)    \
@@ -125,20 +114,40 @@ trap:
     ld gp, (THREAD_KERNEL_GP)(tp)
 
     /* Dispatch the syscall. */
-    li t0, syscall_vec_num
+    li t0, ASM_SYSCALL_COUNT
     bltu a7, t0, 1f
+    li t1, 1
     la t0, syscall_unavailable
     mv a0, a7
     j 2f
 1:
-    slli a7, a7, 3
-    la t0, syscall_vec
+    slli a7, a7, 4
+    la t0, syscall_table
     add t0, t0, a7
-    ld t0, 0(t0)
+    ld t1, 0(t0) /* number of return values */
+    ld t0, 8(t0) /* function pointer */
 2:
     la ra, 1f
+    slli t1, t1, 2
+    add ra, ra, t1
     jr t0
+    /* Zero unsaved registers to avoid leaking kernel information, except
+     * registers used for return values.
+     * We awkwardly "index" the actual jump target from the number of return
+     * values from the syscall_table, so force a fixed instruction size. */
 1:
+    .option push
+    .option norvc
+    mv a0, zero
+    mv a1, zero
+    mv a2, zero
+    mv a3, zero
+    mv a4, zero
+    mv a5, zero
+    mv a6, zero
+    mv a7, zero
+    .option pop
+
     mv t0, tp
 
     ld ra, (THREAD_SYSCALL_RA)(t0)
@@ -149,8 +158,7 @@ trap:
     ld t1, (THREAD_SYSCALL_PC)(t0)
     csrw sepc, t1
 
-    /* Zero unsaved registers to avoid leaking kernel information.
-     * Uh, maybe just saving and restoring them would be cheaper in total? */
+    /* Zero more unsaved registers clobbered by C ABI kernel calls. */
     mv t0, zero
     mv t1, zero
     mv t2, zero
@@ -158,13 +166,6 @@ trap:
     mv t4, zero
     mv t5, zero
     mv t6, zero
-    mv a1, zero
-    mv a2, zero
-    mv a3, zero
-    mv a4, zero
-    mv a5, zero
-    mv a6, zero
-    mv a7, zero
 
     sret
 

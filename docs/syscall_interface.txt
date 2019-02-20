@@ -23,17 +23,17 @@ values are passed back in a0. If there is no return value, a0 is not preserved.
 Syscalls
 --------
 
-get_timer_freq (0):
+SYS_GET_TIMER_FREQ (0):
     Returns non-0 timer frequency for rdtime.
 
-debug_write_char (1):
+SYS_DEBUG_WRITE_CHAR (1):
     Write an ASCII character given by the 8 LSB in the first argument to the
     debug console.
 
-debug_stop (2):
+SYS_DEBUG_STOP (2):
     Make the world end.
 
-thread_create (3):
+SYS_THREAD_CREATE (3):
     Create a new thread. Basic toy-like functionality, so don't say anything.
 
     arg0: PC
