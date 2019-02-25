@@ -81,10 +81,9 @@ change_to_virtual:
     sd zero, 0(t0)
     sfence.vma zero
 
-    /* Some magic stolen from Linux. */
 .option push
 .option norelax
-    la gp, __global_pointer$
+    lla gp, __global_pointer$
 .option pop
 
     la t0, crash
