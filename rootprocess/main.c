@@ -83,8 +83,32 @@ void thread_cr(void)
 {
     static char stack[4096];
 
-    register uintptr_t a0 asm("a0") = (uintptr_t)other_thread;
-    register uintptr_t a1 asm("a1") = (uintptr_t)(stack + sizeof(stack));
+    struct sys_thread_regs regs = {0};
+    regs.regs[2] = (uintptr_t)(stack + sizeof(stack));
+    regs.pc = (uintptr_t)other_thread;
+
+    register uintptr_t a0 asm("a0") = (uintptr_t)&regs;
+    register uintptr_t a1 asm("a1") = 0;
+    register uintptr_t a2 asm("a2") = 0;
+    register uintptr_t a7 asm("a7") = SYS_THREAD_CREATE;
+    asm volatile("ecall"
+        : "=r" (a0),                                // clobber a0
+          "=r" (a1),                                // clobber a1
+          "=r" (a2),                                // clobber a2
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a1),
+          "r" (a2),
+          "r" (a7)
+        : "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+}
+
+static void bogus(void)
+{
+    register uintptr_t a0 asm("a0") = (uintptr_t)0x1234;
+    register uintptr_t a1 asm("a1") = 0;
     register uintptr_t a2 asm("a2") = 0;
     register uintptr_t a7 asm("a7") = SYS_THREAD_CREATE;
     asm volatile("ecall"
@@ -117,6 +141,8 @@ int main(void)
     printf("timer freq: %zd\n", a0);
 
     //*(volatile int *)0xdeadbeefd00dull=123;
+
+    bogus();
 
     thread_cr();
 

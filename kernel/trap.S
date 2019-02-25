@@ -190,15 +190,47 @@ kernel_trap:
     srli sp, sp, 63
     bnez sp, kernel_generic_trap
 
-    /* It's an exception. We don't allow any exceptions in kernel mode. (Even
-     * if we do later to access user virtual memory, we'd handle it here, in a
-     * special, isolated way.) */
-
     /* Use a special stack in case it was a stack overflow.
      * Would  need to be per-CPU on SMP systems (or stop all CPUs before). */
     la sp, emergency_trap_stack_end
 
+    /* It's an exception. We don't allow any exceptions in kernel mode, except
+     * we may want to access user virtual memory, letting the MMU check the
+     * access. This will result in page faults, which we want to handle
+     * normally. In particular, we want to keep the thread stack, so we can
+     * context switch. Since stack overflows will cause page faults too, we
+     * need more dumb complexity to filter them. */
+
+    /* So, get some more free registers. */
+    add sp, sp, -16
+    sd a0, (0)(sp)
+    sd a1, (8)(sp)
+
+    csrr a0, scause
+
+    la a1, 13 /* load page fault */
+    beq a0, a1, 2f
+
+    la a1, 15 /* store page fault */
+    beq a0, a1, 2f
+
+1:
+    ld a0, (0)(sp)
+    ld a1, (8)(sp)
     j generic_trap
+
+2:
+    /* Check the fault address to distinguish between controlled accesses to
+     * user virtual memory and kernel address page faults. Kernel addresses
+     * are always in the "upper" half. */
+    csrr a0, stval
+    srli a0, a0, 63
+    bnez a0, 1b
+
+    /* If it's a user address, restore our registers and restore real stack. */
+    ld a0, (0)(sp)
+    ld a1, (8)(sp)
+    j kernel_generic_trap
 
 kernel_generic_trap:
     /* Restore the real kernel stack from earlier saved sp. */
@@ -256,6 +288,51 @@ trap_return:
     ld sp, (ASM_REGS_REGS +  2 * 8)(sp) /* x2 (sp) */
 
     sret
+
+/* Load/Store operation for C ABI callee-saved registers. */
+#define CALLEE_SAVED_LS(INS)    \
+    INS s0,  (0  * 8)(sp);      \
+    INS s1,  (1  * 8)(sp);      \
+    INS s2,  (2  * 8)(sp);      \
+    INS s3,  (3  * 8)(sp);      \
+    INS s4,  (4  * 8)(sp);      \
+    INS s5,  (5  * 8)(sp);      \
+    INS s6,  (6  * 8)(sp);      \
+    INS s7,  (7  * 8)(sp);      \
+    INS s8,  (8  * 8)(sp);      \
+    INS s9,  (9  * 8)(sp);      \
+    INS s10, (10 * 8)(sp);      \
+    INS s11, (11 * 8)(sp);
+
+.globl memcpy_with_trap
+memcpy_with_trap:
+    /* (1 unused padding word for C ABI stack alignment.) */
+    addi sp, sp, -14 * 8
+    CALLEE_SAVED_LS(sd)
+    sd ra, (12 * 8)(sp)
+
+    /* On exception, we jump to memcpy_with_trap_restore_pc, and sp is set to
+     * the value stored here. */
+    sd sp, (0)(a0)
+
+    mv a0, a1
+    mv a1, a2
+    mv a2, a3
+    call memcpy
+
+    /* (On success we don't need to restore s0-s11; the C ABI preserves them.) */
+    ld ra, (12 * 8)(sp)
+    addi sp, sp, 14 * 8
+    li a0, 1
+    ret
+
+.globl memcpy_with_trap_restore_pc
+memcpy_with_trap_restore_pc:
+    CALLEE_SAVED_LS(ld)
+    ld ra, (12 * 8)(sp)
+    addi sp, sp, 14 * 8
+    li a0, 0
+    ret
 
 .section ".bss..page_aligned", "w"
 .balign PAGE_SIZE

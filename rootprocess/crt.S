@@ -2,6 +2,5 @@
 .globl _start
 _start:
     call main
-    li a7, 2 /* debug_stop */
+    li a7, 2 /* SYS_DEBUG_STOP */
     ecall
-

@@ -18,6 +18,11 @@ struct asm_regs {
     size_t ip;
 } __attribute__((aligned(STACK_ALIGNMENT)));
 
+struct fp_regs {
+    long double regs[32];
+    uint32_t fcsr;
+};
+
 // Create a kernel/user thread. For a kernel thread, pass the kernel aspace. A
 // user thread needs a userspace aspace.
 // In both cases, init_regs needs to be passed. This is copied and on the first
@@ -54,3 +59,6 @@ void ints_restore(bool ints_disable_return_value);
 void ints_enable(void);
 
 void threads_init(void (*boot_handler)(void));
+
+extern bool (*g_filter_kernel_pagefault)(struct asm_regs *regs,
+                                         void *memory_addr);

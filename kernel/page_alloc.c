@@ -271,7 +271,7 @@ void page_alloc_debug_dump(void)
                 const char *t = "?";
                 switch (cur_flags) {
                 case PAGE_USAGE_FREE:       t = "free"; break;
-                case PAGE_USAGE_RESERVED:   t = "firmware reserved"; break;
+                case PAGE_USAGE_RESERVED:   t = "firmware/boot reserved"; break;
                 case PAGE_USAGE_KERNEL:     t = "kernel image"; break;
                 case PAGE_USAGE_GENERAL:    t = "used"; break;
                 case PAGE_USAGE_GENERAL_2:  t = "general2"; break;

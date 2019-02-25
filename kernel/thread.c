@@ -6,7 +6,7 @@
 #include "page_alloc.h"
 #include "thread.h"
 
-#define KERNEL_STACK_MIN (PAGE_SIZE * 2)
+#define KERNEL_STACK_MIN (PAGE_SIZE / 2)
 
 void trap(void);
 void trap_return(void);
@@ -14,6 +14,9 @@ void trap_return(void);
 static struct {
     struct thread *head, *tail;
 } all_threads;
+
+// per CPU
+bool (*g_filter_kernel_pagefault)(struct asm_regs *regs, void *memory_addr);
 
 // Represents a kernel or user mode thread. (User mode threads always imply a
 // kernel thread.)
@@ -26,7 +29,7 @@ struct thread {
     //       without adjusting the offsets in the asm.
 
     // Temporary to relieve register pressure in trap path. These registers are
-    // reused by recursive trap handlers and thus used only while interrupts
+    // reused by recursive trap handlers and thus valid only while interrupts
     // are disabled.
     size_t scratch_sp;  // 0
     size_t scratch_tp;  // 1
@@ -61,6 +64,11 @@ struct thread {
     // Start of the thread allocation; implies stack size and total allocation
     // size; usually points to an unreadable guard page.
     void *base;
+
+    // Unused. Just checking how much damn space this eats up. We try to get by
+    // with 1 4K page per thread (including kernel stack), so if this gets too
+    // much, move to a separate slab allocation. (Same for V extensions.)
+    struct fp_regs fp_state;
 } __attribute__((aligned(STACK_ALIGNMENT)));
 
 // (For simpler asm.)
@@ -288,10 +296,9 @@ static void show_crash(struct asm_regs *ctx)
 
     const char *mode = ctx->status & (1 << 8) ? "super" : "user";
     printf("Happened in privilege level: %s\n", mode);
+    printf("Current kernel stack: %p\n", &(char){0});
 
     printf("\n");
-
-    panic("stop.\n");
 }
 
 void c_trap(struct asm_regs *ctx)
@@ -300,7 +307,20 @@ void c_trap(struct asm_regs *ctx)
         printf("timer IRQ\n");
         thread_reschedule();
     } else {
+        // The RISC-V spec. doesn't define what most of the exception codes
+        // actually mean (lol?). The intention is to catch all page faults that
+        // are caused by memory data accesses in kernel space.
+        if (ctx->cause == 13 || ctx->cause == 15) {
+            if (g_filter_kernel_pagefault) {
+                if (g_filter_kernel_pagefault(ctx, (void *)(uintptr_t)ctx->tval)) {
+                    show_crash(ctx);
+                    printf("(filterted)\n");
+                    return;
+                }
+            }
+        }
         show_crash(ctx);
+        panic("stop.\n");
     }
 }
 

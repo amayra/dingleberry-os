@@ -39,7 +39,7 @@
 #define MMU_NUM_LEVELS          4
 #define MMU_PTE_BITS            9
 
-// Bit position of the PTE index is an address for a page table level.
+// Bit position of the PTE index in an address for a page table level.
 #define MMU_PTE_BITPOS(level) \
     ((MMU_NUM_LEVELS - (level) - 1) * MMU_PTE_BITS + PAGE_SHIFT)
 
@@ -51,9 +51,6 @@
 // Return page size on a specific level. Level 0 is the top-level, and
 // MMU_PAGE_SIZE(MMU_NUM_LEVELS - 1) == PAGE_SIZE.
 #define MMU_PAGE_SIZE(level)    (ULL(1) << MMU_PTE_BITPOS(level))
-
-#define L1_CACHE_SHIFT          6
-#define L1_CACHE_BYTES          (1 << L1_CACHE_SHIFT)
 
 // Start of the kernel space address space. We follow the traditional way of
 // splitting the address space into a low user space and a high kernel space

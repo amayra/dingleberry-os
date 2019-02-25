@@ -327,7 +327,7 @@ static void map_kernel(void *addr, size_t size, int flags)
 {
     uint64_t phys = (uintptr_t)addr - KERNEL_PHY_BASE;
 
-    // Extent address range to page boundaries.
+    // Extend address range to page boundaries.
     size += phys & (PAGE_SIZE - 1);
     phys &= ~(uint64_t)(PAGE_SIZE - 1);
     addr = (void *)((uintptr_t)addr & ~(uintptr_t)(PAGE_SIZE - 1));
@@ -488,7 +488,7 @@ int boot_entry(uintptr_t fdt_phys)
     }
 
     // Mapping the same page multiple times fully overwrites the previous
-    // permissions, so be careful of the order and the linker script.
+    // permissions, so be careful with the order and the linker script.
     map_kernel(&_stext,     &_etext - &_stext,      MMU_FLAG_R | MMU_FLAG_X);
     map_kernel(&_sdata,     &_edata - &_sdata,      MMU_FLAG_R | MMU_FLAG_W);
     map_kernel(&_sbss,      &_ebss - &_sbss,        MMU_FLAG_R | MMU_FLAG_W);

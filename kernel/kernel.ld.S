@@ -25,7 +25,7 @@ SECTIONS
     .text : AT(ADDR(.text) - LOAD_OFFSET) {
         _text = .;
         _stext = .;
-        /* The boot loader jumps at the start of the binary, thus objdump must
+        /* The boot loader jumps to the start of the binary, thus objdump must
          * output .init.text as byte 0. */
         _start = .;
         *(.init.text .init.text.*)
