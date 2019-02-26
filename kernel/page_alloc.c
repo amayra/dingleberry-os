@@ -153,6 +153,7 @@ static bool check_usage(enum page_usage usage)
     case PAGE_USAGE_PT:
     case PAGE_USAGE_THREAD:
     case PAGE_USAGE_USER:
+    case PAGR_USAGE_KMALLOC:
         return true;
     default:
         return false;
@@ -280,6 +281,7 @@ void page_alloc_debug_dump(void)
                 case PAGE_USAGE_PT:         t = "pagetable"; break;
                 case PAGE_USAGE_THREAD:     t = "thread+stack"; break;
                 case PAGE_USAGE_USER:       t = "user"; break;
+                case PAGR_USAGE_KMALLOC:    t = "kmalloc"; break;
                 }
                 printf(" - %d (%d pages): %s\n", cur_pn, cur_num, t);
             }

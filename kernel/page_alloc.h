@@ -19,6 +19,7 @@ enum page_usage {
     PAGE_USAGE_PT,
     PAGE_USAGE_THREAD,
     PAGE_USAGE_USER,
+    PAGR_USAGE_KMALLOC,
 
     // Invalid value
     PAGE_USAGE_COUNT

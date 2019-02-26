@@ -17,9 +17,15 @@ struct slob {
     } free_list;            // list of slob pages that have free items
 };
 
+// Lower bound on maximum element size.
+#define SLOB_MAX_ELEMENT_SIZE (PAGE_SIZE - sizeof(struct slob) * 2)
+
 // Static initializer a slob with the given data type. Actual initialization
 // is done lazily. Explodes if type is too large (close to PAGE_SIZE).
 #define SLOB_INITIALIZER(type) {.element_size = sizeof(type)}
+
+// With explicit size.
+#define SLOB_INITIALIZER_SIZE(size) {.element_size = (size)}
 
 // Allocate an object from the slob. If nothing is free, and no new page could
 // be allocated, returns NULL.
