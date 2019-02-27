@@ -1,3 +1,5 @@
+#include <stdatomic.h>
+
 #include "kernel.h"
 #include "kmalloc.h"
 #include "memory.h"
@@ -33,6 +35,7 @@ struct header {
         // long double, which we don't use in the kernel.
         uintmax_t align_1;
         void *align_2;
+        atomic_ullong align3;
     };
 };
 

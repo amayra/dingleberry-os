@@ -8,6 +8,11 @@ BUILD = build
 OPT_CFLAGS = -Os -g -ggdb -static
 WARN_CFLAGS = -Wall -Werror=format -Werror=implicit-function-declaration
 
+# Get compiler freestanding include path. Pretty much for stdatomic.h.
+# Without -nostdinc, the host include path (/usr/include) is added to the list
+# of search paths, and we don't want that.
+GCC_INCLUDE = $(shell $(CC) -print-file-name=include)
+
 # One of the most important codegen options is -fno-PIE, which prevents gcc
 # from generating idiotic GOT relocations instead of pure PC-relative addressing.
 COMMON_CFLAGS = -MD -MP  $(WARN_CFLAGS) $(OPT_CFLAGS) -D_GNU_SOURCE \
@@ -15,6 +20,7 @@ COMMON_CFLAGS = -MD -MP  $(WARN_CFLAGS) $(OPT_CFLAGS) -D_GNU_SOURCE \
                 -fno-builtin-printf \
                 -nostartfiles -nodefaultlibs -nostdlib -nostdinc \
                 -isystem shared/include_sys/ \
-                -isystem shared/musl/include/
+                -isystem shared/musl/include/ \
+                -isystem $(GCC_INCLUDE)
 
 MUSL = shared/musl
