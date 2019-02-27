@@ -225,7 +225,7 @@ static void fdt_parse(void *fdt)
 }
 
 // Load a userspace executable into the given address space.
-static void load_elf(void *elf, size_t elf_size, struct aspace *aspace,
+static void load_elf(void *elf, size_t elf_size, struct mmu *mmu,
                      uintptr_t *out_entry)
 {
     if ((uintptr_t)elf & 7)
@@ -296,7 +296,7 @@ static void load_elf(void *elf, size_t elf_size, struct aspace *aspace,
                 panic("Out of memory while loading ELF program.\n");
 
             // (This also fails if the ELF uses kernel addresses.)
-            if (!aspace_map(aspace, (void *)vaddr, phys, PAGE_SIZE, mmu_flags))
+            if (!mmu_map(mmu, (void *)vaddr, phys, PAGE_SIZE, mmu_flags))
                 panic("Could not map ELF program page.\n");
 
             void *page = page_phys_to_virt(phys);
@@ -333,9 +333,15 @@ static void map_kernel(void *addr, size_t size, int flags)
     addr = (void *)((uintptr_t)addr & ~(uintptr_t)(PAGE_SIZE - 1));
     size = (size + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
 
-    bool r = aspace_map(aspace_get_kernel(), addr, phys, size, flags);
-    if (!r)
-        panic("Could not establish kernel mapping.\n");
+    flags |= MMU_FLAG_G;
+
+    for (size_t n = 0; n < size / PAGE_SIZE; n++) {
+        bool r = mmu_map(mmu_get_kernel(), addr, phys, PAGE_SIZE, flags);
+        if (!r)
+            panic("Could not establish kernel mapping.\n");
+        addr = (char *)addr + PAGE_SIZE;
+        phys += PAGE_SIZE;
+    }
 }
 
 // The microkernel who parsed tar in the kernel.
@@ -470,7 +476,7 @@ int boot_entry(uintptr_t fdt_phys)
     virt_alloc_cur = (void *)(uintptr_t)(KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE);
     virt_alloc_end = (void *)-(uintptr_t)(PAGE_SIZE);
 
-    aspace_init();
+    mmu_init();
 
     // Remap used parts of the virtual address space.
 
@@ -481,10 +487,7 @@ int boot_entry(uintptr_t fdt_phys)
             break;
         void *virt = page_phys_to_virt(addr);
         assert(virt);
-        bool r = aspace_map(aspace_get_kernel(), virt, addr, size,
-                            MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X);
-        if (!r)
-            panic("Could not create virtual mapping for entire RAM.\n");
+        map_kernel(virt, size, MMU_FLAG_R | MMU_FLAG_W);
     }
 
     // Mapping the same page multiple times fully overwrites the previous
@@ -497,7 +500,7 @@ int boot_entry(uintptr_t fdt_phys)
     page_alloc_debug_dump();
 
     // Switch away from the boot page table.
-    aspace_switch_to(aspace_get_kernel());
+    mmu_switch_to(mmu_get_kernel());
 
     // Switch to a proper kernel thread, which calls the given function to
     // continue booting. This also switches away from the boot stack, and sets
@@ -532,12 +535,12 @@ static void continue_boot(void)
     if (!root_elf)
         panic("initrd rootprocess entry not found.\n");
 
-    struct aspace *user_aspace = aspace_alloc();
-    if (!user_aspace)
+    struct mmu *user_mmu = mmu_alloc();
+    if (!user_mmu)
         panic("Could not allocate user addressspace.\n");
 
     uintptr_t entrypoint;
-    load_elf(root_elf, root_elf_size, user_aspace, &entrypoint);
+    load_elf(root_elf, root_elf_size, user_mmu, &entrypoint);
 
     // Create a stack at the end of the user address space.
     size_t user_stack_size = PAGE_SIZE * 16;
@@ -549,8 +552,8 @@ static void continue_boot(void)
         if (phys == INVALID_PHY_ADDR)
             panic("Out of memory while allocating user stack.\n");
 
-        if (!aspace_map(user_aspace, (void *)(user_stack + n), phys, PAGE_SIZE,
-                        MMU_FLAG_R | MMU_FLAG_W))
+        if (!mmu_map(user_mmu, (void *)(user_stack + n), phys, PAGE_SIZE,
+                     MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_RMAP))
             panic("Could not map user stack page.\n");
 
         void *page = page_phys_to_virt(phys);
@@ -568,7 +571,7 @@ static void continue_boot(void)
     regs.status = 1 << 1;
     regs.regs[2] = user_stack + user_stack_size;
     regs.pc = entrypoint;
-    struct thread *ut = thread_create(user_aspace,  &regs);
+    struct thread *ut = thread_create(user_mmu,  &regs);
     assert(ut);
 
     printf("user thread: %p\n", ut);

@@ -1,11 +1,14 @@
 #include "kernel.h"
 #include "page_alloc.h"
+#include "page_internal.h"
 
-// Support only a single RAM region, and manage it by using a "bytemap". This is
-// quite primitive and inefficient, but no need to do anything more advanced.
+// Support only a single RAM region, but no need to do anything more advanced.
+// RAM rages can be "reserved" to account for small holes and unusable regions.
 
-// Limited by the static size of the bytemap and the initial physical mapping.
-// (Both limits could be easily removed if you didn't have to care about boot.)
+// Limited by the static size of ram_pages[] and the initial physical mapping.
+// This is _very_ wasteful as it bloats ram_pages[] with possibly useless
+// entries. (Both limits could be trivially removed if you didn't have to care
+// about boot.)
 #define MAX_RAM (256ULL * 1024 * 1024)
 static_assert(MAX_RAM <= BOOT_PHY_MAP_SIZE, "");
 
@@ -13,28 +16,36 @@ static uint64_t ram_base_phy = INVALID_PHY_ADDR;
 static uint64_t ram_base_pn;
 static uint64_t ram_num_pages;
 
-// Per-page meta data. Currently holds the value of enum page_usage/PAGE_FLAG_.
-static uint8_t ram_page_flags[(MAX_RAM + PAGE_SIZE - 1) / PAGE_SIZE];
+// Per-page meta data. Used by other subsystems too.
+static struct phys_page ram_pages[(MAX_RAM + PAGE_SIZE - 1) / PAGE_SIZE];
 
 enum {
-    PAGE_FLAG_USAGE = (1 << 6) - 1, // mask for usage flags
-    PAGE_FLAG_BEGIN = 1 << 6,       // start of allocation range
-    PAGE_FLAG_END   = 1 << 7,       // end of allocation range
+    PAGE_FLAG_BEGIN = 1 << 0,       // start of allocation range
+    PAGE_FLAG_END   = 1 << 1,       // end of allocation range
 };
-static_assert(!(PAGE_USAGE_COUNT & ~PAGE_FLAG_USAGE), "");
+static_assert(PAGE_USAGE_COUNT <= 0xFF, "");
 
-// Mark a range of pages with the given flags. Also, verify that the same pages
-// had old_flags before, and check and set range begin/end markers as
-// appropriate (for debugging).
-static void mark_pages(uint64_t pn_start, uint64_t pn_end, uint8_t old_flags,
-                       uint8_t new_flags)
+struct phys_page *phys_page_get(uint64_t phys_addr)
 {
-    assert(!(new_flags & ~PAGE_FLAG_USAGE));
-    assert(!(old_flags & ~PAGE_FLAG_USAGE));
+    if (phys_addr < ram_base_phy)
+        return NULL;
 
+    size_t pn = (phys_addr - ram_base_phy) / PAGE_SIZE;
+    if (pn >= ram_num_pages)
+        return NULL;
+
+    return &ram_pages[pn];
+}
+
+// Mark a range of pages with new_usage. Also, verify that the same pages had
+// old_usage before, and check and set range begin/end markers as appropriate
+// (for debugging).
+static void mark_pages(uint64_t pn_start, uint64_t pn_end, uint8_t old_usage,
+                       uint8_t new_usage)
+{
     // Questionable stuff for early boot.
-    bool mark_resv = old_flags == PAGE_USAGE_FREE &&
-                     new_flags == PAGE_USAGE_RESERVED;
+    bool mark_resv = old_usage == PAGE_USAGE_FREE &&
+                     new_usage == PAGE_USAGE_RESERVED;
 
     if (ram_base_phy == INVALID_PHY_ADDR) {
         assert(mark_resv);
@@ -57,30 +68,34 @@ static void mark_pages(uint64_t pn_start, uint64_t pn_end, uint8_t old_flags,
     pn_end -= ram_base_pn;
 
     for (size_t n = pn_start; n < pn_end; n++) {
-        uint8_t prev = ram_page_flags[n];
-        uint8_t exp_prev = old_flags;
-        uint8_t new = new_flags;
-
         uint8_t rflags = 0;
         if (n == pn_start)
             rflags |= PAGE_FLAG_BEGIN;
         if (n + 1 == pn_end)
             rflags |= PAGE_FLAG_END;
 
-        if (new_flags != PAGE_USAGE_FREE && new_flags != PAGE_USAGE_RESERVED)
-            new |= rflags;
+        uint8_t new_flags = 0;
+        uint8_t old_flags = 0;
 
-        if (old_flags != PAGE_USAGE_FREE && old_flags != PAGE_USAGE_RESERVED)
-            exp_prev |= rflags;
+        if (new_usage != PAGE_USAGE_FREE && new_usage != PAGE_USAGE_RESERVED)
+            new_flags |= rflags;
 
-        if (mark_resv && prev == PAGE_USAGE_RESERVED)
-            exp_prev = PAGE_USAGE_FREE; // inelegantly hammer it into idempotent
+        if (old_usage != PAGE_USAGE_FREE && old_usage != PAGE_USAGE_RESERVED)
+            old_flags |= rflags;
 
-        // (Typically fails if a dangling pointer was freed, or the wrong size
-        // parameter was passed to the free function.)
-        assert(prev == exp_prev);
+        if (mark_resv) {
+            // Marking reserved pages as reserved is allowed, even if old_usage
+            // is USAGE_PAGE_FREE.
+            assert(ram_pages[n].usage == PAGE_USAGE_RESERVED ||
+                   ram_pages[n].usage == PAGE_USAGE_FREE);
+        } else {
+            assert(ram_pages[n].usage == old_usage);
+        }
 
-        ram_page_flags[n] = new;
+        assert(ram_pages[n].pa_flags == old_flags);
+
+        ram_pages[n].usage = new_usage;
+        ram_pages[n].pa_flags = new_flags;
     }
 }
 
@@ -172,7 +187,7 @@ uint64_t page_alloc_phy(size_t num_pages, enum page_usage usage)
 
     // Linear scan over the full memory (this is a high performance kernel!)
     for (size_t n = 0; n < ram_num_pages; n++) {
-        if (!ram_page_flags[n]) {
+        if (!ram_pages[n].usage) {
             if (!cur_num)
                 cur_pn = n;
             cur_num++;
@@ -207,7 +222,7 @@ void page_free_phy(uint64_t addr, size_t num_pages)
     assert(end_pn > pn);
     assert(end_pn <= ram_base_pn + ram_num_pages);
 
-    uint8_t flags = ram_page_flags[pn - ram_base_pn] & PAGE_FLAG_USAGE;
+    uint8_t flags = ram_pages[pn - ram_base_pn].usage;
     // Must be an allocated page & not trying to free memory page_alloc_phy()
     // didn't allocate.
     assert(check_usage(flags));
@@ -261,16 +276,15 @@ void page_alloc_debug_dump(void)
            (PAGE_SIZE * (long long)ram_num_pages));
 
     // Print a RAM memory map.
-    int cur_flags = -1;
+    int cur_usage = -1;
     int cur_pn = -1;
     int cur_num = 0;
     for (size_t n = 0; n <= ram_num_pages; n++) {
-        int full_flags = n == ram_num_pages ? -1 : ram_page_flags[n];
-        int flags = full_flags & PAGE_FLAG_USAGE;
-        if (flags != cur_flags) {
+        int usage = n == ram_num_pages ? -1 : ram_pages[n].usage;
+        if (usage != cur_usage) {
             if (cur_pn >= 0) {
                 const char *t = "?";
-                switch (cur_flags) {
+                switch (cur_usage) {
                 case PAGE_USAGE_FREE:       t = "free"; break;
                 case PAGE_USAGE_RESERVED:   t = "firmware/boot reserved"; break;
                 case PAGE_USAGE_KERNEL:     t = "kernel image"; break;
@@ -285,7 +299,7 @@ void page_alloc_debug_dump(void)
                 }
                 printf(" - %d (%d pages): %s\n", cur_pn, cur_num, t);
             }
-            cur_flags = flags;
+            cur_usage = usage;
             cur_pn = n;
             cur_num = 0;
         }
@@ -295,11 +309,11 @@ void page_alloc_debug_dump(void)
     // Verify range flags.
     int last_usage = -1;
     for (size_t n = 0; n < ram_num_pages; n++) {
-        uint8_t flags = ram_page_flags[n];
-        uint8_t usage = flags & PAGE_FLAG_USAGE;
-        if (flags == PAGE_USAGE_FREE || flags == PAGE_USAGE_RESERVED) {
+        uint8_t flags = ram_pages[n].pa_flags;
+        uint8_t usage = ram_pages[n].usage;
+        if (usage == PAGE_USAGE_FREE || usage == PAGE_USAGE_RESERVED) {
             // These page types don't use the range flags.
-            assert(usage == flags);
+            assert(!flags);
             // But pretend they do, for the sake of the logic below.
             flags |= PAGE_FLAG_BEGIN | PAGE_FLAG_END;
         }

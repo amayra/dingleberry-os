@@ -51,7 +51,7 @@ struct thread {
     void *kernel_sp;
     void *kernel_pc;
 
-    struct aspace *aspace;
+    struct mmu *mmu;
 
     struct {
         struct thread *prev, *next;
@@ -59,7 +59,7 @@ struct thread {
 
     struct {
         struct thread *prev, *next;
-    } aspace_siblings;
+    } mmu_siblings;
 
     // Start of the thread allocation; implies stack size and total allocation
     // size; usually points to an unreadable guard page.
@@ -75,10 +75,10 @@ struct thread {
 static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
 static_assert(!(sizeof(struct thread) & (STACK_ALIGNMENT - 1)), "");
 
-struct thread *thread_create(struct aspace *aspace, struct asm_regs *init_regs)
+struct thread *thread_create(struct mmu *mmu, struct asm_regs *init_regs)
 {
-    struct aspace *kaspace = aspace_get_kernel();
-    bool is_kernel = aspace == kaspace;
+    struct mmu *kmmu = mmu_get_kernel();
+    bool is_kernel = mmu == kmmu;
 
     int pages =
         (KERNEL_STACK_MIN + sizeof(struct thread) + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -96,14 +96,14 @@ struct thread *thread_create(struct aspace *aspace, struct asm_regs *init_regs)
         uint64_t page = page_alloc_phy(1, PAGE_USAGE_THREAD);
         if (page == INVALID_PHY_ADDR)
             goto fail;
-        if (!aspace_map(kaspace, (char *)base + n * PAGE_SIZE, page, PAGE_SIZE,
+        if (!mmu_map(kmmu, (char *)base + n * PAGE_SIZE, page, PAGE_SIZE,
                         MMU_FLAG_R | MMU_FLAG_W))
             goto fail;
     }
 
     struct thread *t = (void *)((char *)base + pages * PAGE_SIZE - sizeof(*t));
     *t = (struct thread){
-        .aspace = aspace,
+        .mmu = mmu,
         .base = base,
     };
 
@@ -125,7 +125,7 @@ struct thread *thread_create(struct aspace *aspace, struct asm_regs *init_regs)
     ctx->status |= (2ULL << 32) | 0x80000;
 
     LL_APPEND(&all_threads, t, all_threads);
-    LL_APPEND(&aspace->owners, t, aspace_siblings);
+    LL_APPEND(&mmu->owners, t, mmu_siblings);
 
     return t;
 
@@ -141,12 +141,12 @@ struct thread *thread_create_kernel(void (*thread)(void *ctx), void *ctx)
     struct asm_regs regs = {0};
     regs.regs[10] = (uintptr_t)ctx; // a0
     regs.pc = (uintptr_t)thread;
-    return thread_create(aspace_get_kernel(), &regs);
+    return thread_create(mmu_get_kernel(), &regs);
 }
 
-struct aspace *thread_get_aspace(struct thread *t)
+struct mmu *thread_get_mmu(struct thread *t)
 {
-    return t->aspace;
+    return t->mmu;
 }
 
 struct thread *thread_current(void)
@@ -192,7 +192,7 @@ void ints_enable(void)
 
 void thread_switch_to(struct thread *t)
 {
-    aspace_switch_to(t->aspace);
+    mmu_switch_to(t->mmu);
 
     // Set time slice for thread t. We don't actually know at which places
     // we return from userspace (different entrypoints like syscalls, IRQ, and
@@ -201,7 +201,7 @@ void thread_switch_to(struct thread *t)
     sbi_set_timer(read_timer_ticks() + timer_frequency * 1);
 
     // Actual context switch.
-    // Shitty detail about savinf registes: we force the compiler to save the
+    // Shitty detail about saving registers: we force the compiler to save the
     // callee-saved registers for us (although there are no advantages to do
     // this). We list _all_ registers as being clobbered, except zero,
     // sp/gp/tp, and ra. ra is used for the only "r" constraint and is clobbered

@@ -89,12 +89,12 @@ static void syscall_thread_create(void *regs_arg)
     struct sys_thread_regs user_regs;
     if (!copy_from_user(&user_regs, regs_arg, sizeof(user_regs)))
         return;
-    struct aspace *aspace = thread_get_aspace(thread_current());
+    struct mmu *mmu = thread_get_mmu(thread_current());
     struct asm_regs regs = {0};
     for (size_t n = 0; n < 32; n++)
         regs.regs[n] = user_regs.regs[n];
     regs.pc = user_regs.pc;
-    struct thread *t = thread_create(aspace, &regs);
+    struct thread *t = thread_create(mmu, &regs);
     assert(t);
     printf("user created thread: %p\n", t);
 }

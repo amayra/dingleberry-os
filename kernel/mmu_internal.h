@@ -2,7 +2,7 @@
 
 #include "kernel.h"
 
-struct aspace {
+struct mmu {
     bool is_kernel;
     uint64_t root_pt;
 
@@ -11,6 +11,16 @@ struct aspace {
     } owners;
 
     struct {
-        struct aspace *prev, *next;
-    } all_aspaces;
+        struct mmu *prev, *next;
+    } all_mmus;
+};
+
+// We need to easily change the permissions of all mappings of a physical page
+// (or revoke all mappings). This forms a singly-linked list for each page
+// (struct phys_page.pte_list). Note that this makes removing a single, specific
+// mapping O(n) for n mappings, but we hope n is small.
+struct mmu_pte_link {
+    struct mmu *mmu;            // owner of the mapping
+    void *map_addr;             // virtual address of the mapping PTE
+    struct mmu_pte_link *next;  // singly linked list
 };
