@@ -88,3 +88,7 @@ void mmu_rmap_mark_ro(uint64_t phys);
 void mmu_rmap_unmap(uint64_t phys);
 
 void mmu_switch_to(struct mmu* mmu);
+
+// Return true iff addr/size is generally a valid region within userspace. This
+// checks alignment (as allowed by mmu_map()) too.
+bool mmu_is_valid_user_region(void *addr, size_t size);

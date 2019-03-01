@@ -7,6 +7,13 @@ struct phys_page {
     uint8_t usage;      // enum page_usage cast to uint8_t
     uint8_t pa_flags;   // internal to page_alloc.c; PAGE_FLAG_* bit field.
 
+    // Contents depend on usage. This field is separate from .u to save some
+    // bytes of memory (as alignment frees up some space at this position).
+    // Meaning:
+    //  PAGE_USAGE_USER: VM_PHYS_PAGE_FLAG_*
+    uint16_t u_flags;
+
+
     // Contents depend on usage.
     union {
         // PAGE_USAGE_USER (virtual memory)
@@ -16,8 +23,10 @@ struct phys_page {
             //       page. A physical page could be used even if unmapped.
             //       The kernel mapping is also not part of it.
             struct mmu_pte_link *pte_list;
-            // Logical usage count. (To be used for COW.)
-            uint64_t vm_refcount;
+            // Logical usage count (number of vm_resident structs using this).
+            uint32_t vm_refcount;
+            // VM_PHYS_PAGE_FLAG_*
+            uint32_t vm_flags;
         } user;
     } u;
 };

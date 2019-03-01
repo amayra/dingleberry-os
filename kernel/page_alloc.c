@@ -94,6 +94,12 @@ static void mark_pages(uint64_t pn_start, uint64_t pn_end, uint8_t old_usage,
 
         assert(ram_pages[n].pa_flags == old_flags);
 
+        // Reset meta data on changes (i.e. alloc/dealloc).
+        if (ram_pages[n].usage != new_usage) {
+            ram_pages[n].u_flags = 0;
+            memset(&ram_pages[n].u, 0, sizeof(ram_pages[n].u));
+        }
+
         ram_pages[n].usage = new_usage;
         ram_pages[n].pa_flags = new_flags;
     }

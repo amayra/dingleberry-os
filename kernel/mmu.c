@@ -261,21 +261,37 @@ static int fix_flags(int flags)
     return flags;
 }
 
-static bool validate_vaddr(struct mmu* mmu, uintptr_t ivirt, size_t size,
+// Note: may allow superpages at a later point
+static bool check_region(void *addr, size_t size, bool kernel)
+{
+    uintptr_t ivirt = (uintptr_t)addr;
+
+    if ((ivirt & (size - 1)) || (size & (PAGE_SIZE - 1)))
+        return false; // alignment
+
+    // Must not cross boundaries (including user/kernel split)
+    uint64_t min = kernel ? KERNEL_SPACE_BASE : 0;
+    uint64_t max = kernel ? UINT64_MAX : MMU_ADDRESS_LOWER_MAX;
+    if (ivirt < min)
+        return false;
+    if (max - ivirt < size - 1)
+        return false;
+
+    return true;
+}
+
+bool mmu_is_valid_user_region(void *addr, size_t size)
+{
+    return check_region(addr, size, false);
+}
+
+static bool validate_vaddr(struct mmu *mmu, uintptr_t ivirt, size_t size,
                            int flags)
 {
     if (size != PAGE_SIZE)
         return false; // for now support only leaf pages
 
-    if ((ivirt & (size - 1)) || (size & (size - 1)))
-        return false; // alignment
-
-    // Must not cross boundaries (including user/kernel split)
-    uint64_t min = mmu->is_kernel ? KERNEL_SPACE_BASE : 0;
-    uint64_t max = mmu->is_kernel ? UINT64_MAX : MMU_ADDRESS_LOWER_MAX;
-    if (ivirt < min)
-        return false;
-    if (max - ivirt < size - 1)
+    if (!check_region((void *)ivirt, size, mmu->is_kernel))
         return false;
 
     // Global pages make sense for the kernel only. (Special cases, such as L4
@@ -305,9 +321,6 @@ bool mmu_map(struct mmu* mmu, void *virt, uint64_t phys, size_t size, int flags)
     if (phys != INVALID_PHY_ADDR) {
         if (phys & (PAGE_SIZE - 1))
             return false; // alignment
-
-        if (UINT64_MAX - phys < size - 1)
-            return false; // no wraparound
 
         // Make sure the actual write_pt() succeeds. This is less of a pain
         // for later error handling.
