@@ -266,7 +266,7 @@ static bool check_region(void *addr, size_t size, bool kernel)
 {
     uintptr_t ivirt = (uintptr_t)addr;
 
-    if ((ivirt & (size - 1)) || (size & (PAGE_SIZE - 1)))
+    if ((ivirt & (PAGE_SIZE - 1)) || (size & (PAGE_SIZE - 1)))
         return false; // alignment
 
     // Must not cross boundaries (including user/kernel split)

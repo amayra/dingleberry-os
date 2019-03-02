@@ -70,22 +70,57 @@ _Noreturn void __assert_fail(const char *expr, const char *file, int line,
     abort();
 }
 
-static void other_thread(void)
+static void other_thread(int num)
 {
     printf("other thread\n");
     while (1) {
         asm volatile("wfi");
-        printf("wfi wakeup (thread2)\n");
+        printf("wfi wakeup (thread%d)\n", num);
     }
 }
 
-void thread_cr(void)
+static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
+                          uint64_t offset)
 {
-    static char stack[4096];
+    register uintptr_t a0 asm("a0") = (uintptr_t)addr;
+    register uintptr_t a1 asm("a1") = length;
+    register uintptr_t a2 asm("a2") = flags;
+    register uintptr_t a3 asm("a3") = handle;
+    register uintptr_t a4 asm("a4") = offset;
+    register uintptr_t a7 asm("a7") = SYS_MMAP;
+    asm volatile("ecall"
+        : "=r" (a0),                                // return value
+          "=r" (a1),                                // clobber a1
+          "=r" (a2),                                // clobber a2
+          "=r" (a3),                                // clobber a3
+          "=r" (a4),                                // clobber a4
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a1),
+          "r" (a2),
+          "r" (a3),
+          "r" (a4),
+          "r" (a7)
+        : "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+    return a0;
+}
+
+void thread_cr(int num)
+{
+    size_t stack_size = 4096 * 4;
+    void *stack = syscall_mmap((void *)-1, stack_size,
+                    KERN_MAP_FORK_COPY | KERN_MAP_PERM_W | KERN_MAP_PERM_R,
+                    -1, 0);
+    assert(!KERN_MMAP_FAILED(stack));
 
     struct sys_thread_regs regs = {0};
-    regs.regs[2] = (uintptr_t)(stack + sizeof(stack));
+    regs.regs[2] = (uintptr_t)stack + stack_size;
+    regs.regs[10] = num;
     regs.pc = (uintptr_t)other_thread;
+
+    printf("stack: %p-%p\n", stack, (void *)regs.regs[2]);
 
     register uintptr_t a0 asm("a0") = (uintptr_t)&regs;
     register uintptr_t a1 asm("a1") = 0;
@@ -144,7 +179,8 @@ int main(void)
 
     bogus();
 
-    thread_cr();
+    thread_cr(2);
+    thread_cr(3);
 
     while (1) {
         asm volatile("wfi");

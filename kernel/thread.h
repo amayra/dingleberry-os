@@ -4,7 +4,7 @@
 
 #include "memory.h"
 
-struct mmu;
+struct vm_aspace;
 
 // The layout of this struct is fully fixed in asm.
 struct asm_regs {
@@ -23,15 +23,14 @@ struct fp_regs {
     uint32_t fcsr;
 };
 
-// Create a kernel/user thread. For a kernel thread, pass the kernel mmu. A
-// user thread needs a userspace mmu.
+// Create a kernel/user thread. For a kernel thread, pass NULL for aspace.
 // In both cases, init_regs needs to be passed. This is copied and on the first
 // context switch used to initialize the exact execution point (which can be
 // kernel or userspace).
-// If this is a kernel thread (kernel mmu), the sp register is overwritten,
+// If this is a kernel thread, the sp register is overwritten,
 // and set to the start of the kernel stack, tp/gp/status are overwritten to
 // their their proper values.
-struct thread *thread_create(struct mmu *mmu, struct asm_regs *init_regs);
+struct thread *thread_create(struct vm_aspace *aspace, struct asm_regs *init_regs);
 
 // Helper function for creating a kernel thread. You can't return from the
 // thread. The thread function is called once the thread is first switched to.
@@ -40,8 +39,8 @@ struct thread *thread_create_kernel(void (*thread)(void *ctx), void *ctx);
 // Return current kernel thread.
 struct thread *thread_current(void);
 
-// Return the thread's mmu.
-struct mmu *thread_get_mmu(struct thread *t);
+// Return the thread's aspace.
+struct vm_aspace *thread_get_aspace(struct thread *t);
 
 // Cooperative context switch.
 void thread_switch_to(struct thread *t);

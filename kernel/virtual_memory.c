@@ -1,3 +1,11 @@
+#include "kernel.h"
+#include "linked_list.h"
+#include "mmu.h"
+#include "page_alloc.h"
+#include "page_internal.h"
+#include "slob.h"
+#include "virtual_memory.h"
+
 #define PERM_MASK (KERN_MAP_PERM_R | KERN_MAP_PERM_W | KERN_MAP_PERM_X)
 
 enum {
@@ -157,6 +165,7 @@ struct vm_aspace {
 };
 
 static void vm_objref_destroy(struct vm_object_ref *ref);
+static void vm_object_unref(struct vm_object *obj);
 
 static struct slob slob_vm_aspace = SLOB_INITIALIZER(struct vm_aspace);
 static struct slob slob_vm_mapping = SLOB_INITIALIZER(struct vm_mapping);
@@ -165,6 +174,57 @@ static struct slob slob_vm_object = SLOB_INITIALIZER(struct vm_object);
 static struct slob slob_vm_object_ref = SLOB_INITIALIZER(struct vm_object_ref);
 
 static struct vm_object_ops anon_mem_ops = {0};
+
+static struct phys_page *vm_resident_get_phys_page(struct vm_resident_page *page)
+{
+    struct phys_page *phys_page = phys_page_get(page->phys_addr);
+
+    // It makes no sense for this to fail as long as they're correctly
+    // allocated.
+    assert(phys_page);
+    assert(phys_page->usage == PAGE_USAGE_USER);
+    assert(phys_page->u.user.vm_refcount > 0);
+
+    return phys_page;
+}
+
+// Warning: you must remove the entry from vm_resident.pages[] containing this.
+//          Otherwise you get a dangling physical memory pointer.
+static void vm_resident_destroy_page(struct vm_resident_page *page)
+{
+    struct phys_page *phys_page = vm_resident_get_phys_page(page);
+
+    // Unmap it completely. Unfortunately, this also unmaps PTEs that
+    // can still legitimately access it (at least if vm_refcount>1),
+    // but we have no control over this. The PTEs can be reestablished
+    // on demand (via page faults).
+    // TODO: this will happen to all pages in a parent process every
+    //       time a child terminates. Maybe keep a list of all
+    //       vm_mappings that use a vm_resident? A vm_mapping can use
+    //       up to 2 vm_residents, though.
+    mmu_rmap_unmap(page->phys_addr);
+    phys_page->u.user.vm_refcount -= 1;
+
+    if (phys_page->u.user.vm_refcount == 0)
+        page_free_phy(page->phys_addr, PAGE_SIZE);
+}
+
+static void vm_resident_unref(struct vm_resident *res)
+{
+    if (!res)
+        return;
+
+    assert(res->refcount > 0);
+    res->refcount -= 1;
+
+    if (res->refcount == 0) {
+        for (size_t n = 0; n < res->num_pages; n++)
+            vm_resident_destroy_page(&res->pages[n]);
+
+        free(res->pages);
+        slob_free(&slob_vm_resident, res);
+    }
+}
 
 // Create a new vm_resident struct. If base!=NULL, then copy and create COW
 // references to all pages present in base.
@@ -189,18 +249,13 @@ static struct vm_resident *vm_resident_mooh(struct vm_resident *base)
 
         for (size_t n = 0; n < new->num_pages; n++) {
             struct vm_resident_page *src = &new->pages[n];
-            struct phys_page *phys_page = phys_page_get(src->phys_addr)
-
-            // It makes no sense for this to fail as long as they're correctly
-            // allocated.
-            assert(phys_page);
-            assert(phys_page->usage == PAGE_USAGE_USER);
+            struct phys_page *phys_page = vm_resident_get_phys_page(src);
 
             // Revoke write access for all VM mappings of this page. Write
             // accesses will cause a page fault, which copy the memory, or
             // just reenable write access if the refcount is 1 again.
             mmu_rmap_mark_ro(src->phys_addr);
-            phys_page->vm_refcount += 1;
+            phys_page->u.user.vm_refcount += 1;
         }
     }
 
@@ -220,33 +275,133 @@ static struct vm_resident_page *vm_resident_get_page(struct vm_resident *res,
     return NULL;
 }
 
+// Make sure the given page referenced is writable. Returns false on OOM.
+static bool vm_resident_make_writeable(struct vm_resident_page *page)
+{
+    struct phys_page *phys_page = vm_resident_get_phys_page(page);
+
+    // Replace with an actual copy if needed.
+    if (phys_page->u.user.vm_refcount > 1) {
+        // There may be other processes which may need to unmap the address in
+        // page->phys_addr - otherwise they'll continue to read the old page.
+        // This would result in them seeing outdated data.
+        mmu_rmap_unmap(page->phys_addr);
+
+        uint64_t phys = page_alloc_phy(1, PAGE_USAGE_USER);
+        if (phys == INVALID_PHY_ADDR)
+            return false; // OOM
+
+        struct phys_page *phys_page_new = phys_page_get(phys);
+
+        assert(phys_page_new);
+        assert(phys_page_new->usage == PAGE_USAGE_USER);
+        assert(phys_page->u.user.vm_refcount == 0);
+
+        void *src = page_phys_to_virt(page->phys_addr);
+        void *dst = page_phys_to_virt(phys);
+
+        assert(src);
+        assert(dst);
+
+        memcpy(dst, src, PAGE_SIZE);
+
+        page->phys_addr = phys;
+        phys_page_new->u.user.vm_refcount += 1;
+        phys_page->u.user.vm_refcount -= 1;
+    }
+
+    return true;
+}
+
+static bool vm_resident_is_writeable(struct vm_resident_page *page)
+{
+    struct phys_page *phys_page = vm_resident_get_phys_page(page);
+    return phys_page->u.user.vm_refcount == 1;
+}
+
+// Increase capacity of res->pages[] so that 1 new entry can be added.
+// Returns false on failure.
+static bool vm_resident_reserve_entry(struct vm_resident *res)
+{
+    if (res->num_pages == (size_t)-1)
+        return false;
+
+    struct vm_resident_page *new_pages =
+        realloc(res->pages, sizeof(res->pages[0]) * (res->num_pages + 1));
+    if (!new_pages)
+        return false; // OOM
+    res->pages = new_pages;
+    return true;
+}
+
+// Allocate a new page and add it to the page list. Entry must not have existed
+// yet.
+// (Note: a real system would possibly prune caches on low memory, make it
+//  possible to customize handling OOM, and so on. We don't yet, so this cannot
+//  block or sleep.)
+static struct vm_resident_page *vm_resident_alloc_page(struct vm_resident *res,
+                                                       uint64_t offset)
+{
+    assert(!vm_resident_get_page(res, offset));
+
+    if (!vm_resident_reserve_entry(res))
+        return NULL;
+
+    uint64_t phys = page_alloc_phy(1, PAGE_USAGE_USER);
+    if (phys == INVALID_PHY_ADDR)
+        return NULL; // OOM
+
+    struct phys_page *phys_page = phys_page_get(phys);
+
+    assert(phys_page);
+    assert(phys_page->usage == PAGE_USAGE_USER);
+    assert(phys_page->u.user.vm_refcount == 0);
+
+    phys_page->u.user.vm_refcount = 1;
+
+    void *virt = page_phys_to_virt(phys);
+    assert(virt);
+    memset(virt, 0, PAGE_SIZE);
+
+    struct vm_resident_page *new = &res->pages[res->num_pages++];
+    *new = (struct vm_resident_page){
+        .offset = offset,
+        .phys_addr = phys,
+    };
+
+    return new;
+}
+
+// Add some other page to this struct. This setups the page for COW. Entry must
+// not have existed yet.
+static struct vm_resident_page *vm_resident_share_page(
+    struct vm_resident *res, uint64_t offset, struct vm_resident_page *other)
+{
+    assert(!vm_resident_get_page(res, offset));
+
+    if (!vm_resident_reserve_entry(res))
+        return NULL;
+
+    struct phys_page *phys_page = vm_resident_get_phys_page(other);
+
+    phys_page->u.user.vm_refcount += 1;
+
+    struct vm_resident_page *new = &res->pages[res->num_pages++];
+    *new = (struct vm_resident_page){
+        .offset = offset,
+        .phys_addr = other->phys_addr,
+    };
+
+    return new;
+}
+
 // Notify the vm_resident that pages below a and above b need to be removed.
 static void vm_resident_slice(struct vm_resident *res, size_t a, size_t b)
 {
     for (size_t n = res->num_pages; n > 0; n--) {
         struct vm_resident_page *page = &res->pages[n - 1];
         if (page->offset < a || page->offset >= b) {
-            struct phys_page *phys_page = phys_page_get(src->phys_addr)
-
-            // It makes no sense for this to fail as long as they're correctly
-            // allocated.
-            assert(phys_page);
-            assert(phys_page->usage == PAGE_USAGE_USER);
-            assert(phys_page->vm_refcount > 0);
-
-            // Unmap it completely. Unfortunately, this also unmaps PTEs that
-            // can still legitimately access it (at least if vm_refcount>1),
-            // but we have no control over this. The PTEs can be reestablished
-            // on demand (via page faults).
-            // TODO: this will happen to all pages in a parent process every
-            //       time a child terminates. Maybe keep a list of all
-            //       vm_mappings that use a vm_resident? A vm_mapping can use
-            //       up to 2 vm_residents, though.
-            mmu_rmap_unmap(page->phys_addr);
-            phys_page->vm_refcount -= 1;
-
-            if (phys_page->vm_refcount == 0)
-                page_free_phy(page->phys_addr, PAGE_SIZE);
+            vm_resident_destroy_page(page);
 
             res->pages[n - 1] = res->pages[res->num_pages - 1];
             res->num_pages -= 1;
@@ -254,6 +409,22 @@ static void vm_resident_slice(struct vm_resident *res, size_t a, size_t b)
     }
 
     // TODO: maybe resize pages[] array if enough pages were removed
+}
+
+static void vm_aspace_dump(struct vm_aspace *as)
+{
+    printf("vm_aspace %p:\n", as);
+    for (struct vm_mapping *m = as->mappings.head; m; m = m->mappings.next) {
+        char perm[] = "RWX";
+        if (!(m->flags & KERN_MAP_PERM_R))
+            perm[0] = '-';
+        if (!(m->flags & KERN_MAP_PERM_W))
+            perm[1] = '-';
+        if (!(m->flags & KERN_MAP_PERM_X))
+            perm[2] = '-';
+        printf("  %016lx - %016lx %s\n", (long)m->virt_start,
+               (long)m->virt_end, perm);
+    }
 }
 
 struct vm_aspace *vm_aspace_create(void)
@@ -269,6 +440,11 @@ struct vm_aspace *vm_aspace_create(void)
     }
 
     return as;
+}
+
+struct mmu *vm_aspace_get_mmu(struct vm_aspace *as)
+{
+    return as->mmu;
 }
 
 // Return the vm_mapping at which the byte at addr falls into, or if there is
@@ -353,7 +529,7 @@ static void mapping_destroy_unlink(struct vm_aspace *as, struct vm_mapping *m)
 {
     mapping_mmu_unmap_range(as, m, m->virt_start, m->virt_end);
 
-    LL_REMOVE(as->mappings, m, mappings);
+    LL_REMOVE(&as->mappings, m, mappings);
     mapping_destroy_only(m);
 }
 
@@ -400,7 +576,7 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
             return false; // can't change this
     }
 
-    bool a_split = addr > a->virt_start && addr < a->virt_end;
+    bool a_split = start > a->virt_start && start < a->virt_end;
     bool b_split = end > b->virt_start && end < b->virt_end;
     // A single region is split into 3 (or 2 on unmap).
     bool ab_split = a == b && a_split && b_split;
@@ -415,7 +591,7 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
                 return false;
 
             mapping_clamp(as, a_new, false, start, a->virt_end);
-            LL_INSERT_AFTER(as->mappings, a, anew, mappings);
+            LL_INSERT_AFTER(&as->mappings, a, a_new, mappings);
         }
 
         mapping_clamp(as, a, true, a->virt_start, start);
@@ -430,7 +606,7 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
                 return false;
 
             mapping_clamp(as, b_new, false, b->virt_start, end);
-            LL_INSERT_BEFORE(as->mappings, b, bnew, mappings);
+            LL_INSERT_BEFORE(&as->mappings, b, b_new, mappings);
         }
 
         mapping_clamp(as, b, true, end, b->virt_end);
@@ -468,13 +644,16 @@ static bool vm_insert_mapping(struct vm_aspace *as, struct vm_mapping *new,
                               bool overwrite)
 {
     struct vm_mapping *unused1, *unused2;
-    if (!split_map(as, addr, length, true, overwrite, &unused1, &unused2)) {
+    if (!split_map(as, (void *)new->virt_start, new->virt_end - new->virt_start,
+                   true, overwrite, &unused1, &unused2))
+    {
         mapping_destroy_only(new);
         return false;
     }
 
-    struct vm_mapping *m = vm_aspace_lookup(as, new->virt_start);
-    LL_INSERT_BEFORE(as->mappings, m, new, mappings);
+    struct vm_mapping *m = vm_aspace_lookup(as, (void *)new->virt_start);
+    LL_INSERT_BEFORE(&as->mappings, m, new, mappings);
+    vm_aspace_dump(as);
     return true;
 }
 
@@ -486,7 +665,7 @@ static bool vm_insert_mapping(struct vm_aspace *as, struct vm_mapping *new,
 // to grow. It shouldn't be O(n) either.
 static void *find_region(struct vm_aspace *as, size_t length)
 {
-    uintptr_t start = 0x10000;
+    uintptr_t start = 0x200000;
     size_t guard_size = PAGE_SIZE;
     length += guard_size * 2;
 
@@ -498,14 +677,16 @@ static void *find_region(struct vm_aspace *as, size_t length)
         m = m->mappings.next;
     }
 
-    return start + guard_size;
+    return (void *)(start + guard_size);
 }
 
 void *vm_mmap(struct vm_aspace *as, void *addr, size_t length, int flags,
               struct vm_object_ref *obj, uint64_t offset)
 {
+    struct vm_mapping *new = NULL;
+
     if ((flags & KERN_MAP_FORK_COPY) && (flags & KERN_MAP_FORK_SHARE))
-        return false; // flag combination not allowed
+        goto fail; // flag combination not allowed
 
     if (addr == (void *)-1) {
         flags = flags & ~(unsigned)KERN_MAP_OVERWRITE;
@@ -513,11 +694,11 @@ void *vm_mmap(struct vm_aspace *as, void *addr, size_t length, int flags,
     }
 
     if (!mmu_is_valid_user_region(addr, length) || !length)
-        return false;
+        goto fail;
 
-    struct vm_mapping *new = slob_allocz(&slob_vm_mapping);
+    new = slob_allocz(&slob_vm_mapping);
     if (!new)
-        return NULL;
+        goto fail;
 
     new->virt_start = (uintptr_t)addr;
     new->virt_end = new->virt_start + length;
@@ -564,10 +745,14 @@ void *vm_mmap(struct vm_aspace *as, void *addr, size_t length, int flags,
         new->data.resident = newres;
     }
 
-    return vm_insert_mapping(as, new, flags & KERN_MAP_OVERWRITE);
+    if (vm_insert_mapping(as, new, flags & KERN_MAP_OVERWRITE))
+        return addr;
+    new = NULL;
+    goto fail;
 
 fail:
-    mapping_destroy_only(new);
+    if (new)
+        mapping_destroy_only(new);
     return (void *)-1;
 }
 
@@ -655,6 +840,17 @@ static struct vm_object_ref *objref_create_initial(struct vm_object *obj)
     return ref;
 }
 
+static void vm_object_unref(struct vm_object *obj)
+{
+    assert(obj->refcount > 0);
+    obj->refcount -= 1;
+    if (obj->refcount == 0) {
+        if (obj->ops->free)
+            obj->ops->free(obj->ops_ud);
+        vm_resident_unref(obj->resident);
+    }
+}
+
 // (base_res as a hack to provide a basic set of pre-existing pages)
 static struct vm_object_ref *vm_objref_create_internal(
     const struct vm_object_ops *ops,  void *ud, struct vm_resident *base_res)
@@ -664,7 +860,6 @@ static struct vm_object_ref *vm_objref_create_internal(
         return NULL;
 
     obj->refcount = 1;
-    obj->size = size;
     obj->is_anonymous = ops == &anon_mem_ops;
 
     obj->resident = vm_resident_mooh(base_res);
@@ -714,7 +909,7 @@ bool vm_fork(struct vm_aspace *dst, struct vm_aspace *src)
     if (dst->mappings.head)
         return false;
 
-    for (struct vm_mapping *m = src->mappings.head; m; m = m->next) {
+    for (struct vm_mapping *m = src->mappings.head; m; m = m->mappings.next) {
         if (!(m->flags & (KERN_MAP_FORK_COPY | KERN_MAP_FORK_SHARE)))
             continue;
 
@@ -736,8 +931,8 @@ bool vm_fork(struct vm_aspace *dst, struct vm_aspace *src)
             }
         }
 
-        void *r = vm_mmap(dst, (void *)m->virt_base, m->virt_end - m->virt_base,
-                          flags, obj, m->offset);
+        void *r = vm_mmap(dst, (void *)m->virt_start, m->virt_end - m->virt_start,
+                          flags, ref, m->offset);
 
         if (ref != &m->data)
             vm_objref_unref(ref);
@@ -751,7 +946,7 @@ bool vm_fork(struct vm_aspace *dst, struct vm_aspace *src)
 fail:
     while (dst->mappings.head) {
         struct vm_mapping *m = dst->mappings.head;
-        bool r = vm_munmap((void *)m->virt_start, m->virt_end - m->virt_start);
+        bool r = vm_munmap(dst, (void *)m->virt_start, m->virt_end - m->virt_start);
         assert(r); // non-splitting unmap, always must succeed
     }
     return false;
@@ -775,8 +970,6 @@ void vm_objref_set_size(struct vm_object_ref *ref, uint64_t size)
     ref->object->size = size;
 }
 
-// Returns whether we think the page fault was handled. If it returns false,
-// invoke a crash handler. If it returns true, retry.
 bool vm_aspace_handle_page_fault(struct vm_aspace *as, void *addr, int access)
 {
     // Exactly one R/W/X bit must be set.
@@ -787,33 +980,93 @@ bool vm_aspace_handle_page_fault(struct vm_aspace *as, void *addr, int access)
     uintptr_t iaddr = (uintptr_t)addr;
     iaddr = iaddr & ~(uintptr_t)(PAGE_SIZE - 1);
 
+    const char *ftype = "?";
+    switch (access) {
+    case KERN_MAP_PERM_R: ftype = "read"; break;
+    case KERN_MAP_PERM_W: ftype = "write"; break;
+    case KERN_MAP_PERM_X: ftype = "exec"; break;
+    }
+    printf("fault %s at %lx\n", ftype, iaddr);
+    vm_aspace_dump(as);
+
     struct vm_mapping *m = vm_aspace_lookup(as, addr);
     if (!m || iaddr < m->virt_start || iaddr >= m->virt_end || m->kernel_reserved)
         return false; // unknown/unmanaged memory region
 
-    if (!m->data.object)
+    struct vm_object *object = m->data.object;
+    struct vm_resident *resident = m->data.resident;
+
+    if (!object)
         return false; // trying to access revoked object
 
     uintptr_t offset = iaddr - m->virt_start + m->offset + m->data.offset_a;
     if (offset >= m->data.offset_b)
         return false; // access to region without access
 
-    if (offset >= m->data.object->size)
+    if (offset >= object->size)
         return false; // out of bounds access
 
     if (!(access & m->flags))
         return false; // no permissions (e.g. write to R/O mapping)
 
-    struct vm_resident_page *page =
-        vm_resident_get_page(m->data.resident, offset);
-    - if page is present, and no write access, map it, return
-      (check phys_page refcount==1 and map it as W if m->flags agrees)
-    - if page is present, and write access, then check phys_page refcount,
-      and if refcount>1, COW it
-    - then check m->data.object->resident; if page present create a new
-      reference to it in m->data.resident, and do the same as above
-    - then invoke m->data.object->ops->read_page; this can block, and more
-      complex complexity it needed
-      (for anonymous memory, it just allocs a new page though)
+    // Whether this mapping principally uses COW.
+    bool use_priv = resident != object->resident;
+    bool write = access & KERN_MAP_PERM_W;
+    bool allow_write = m->flags & KERN_MAP_PERM_W;
 
+    struct vm_resident_page *page_u = vm_resident_get_page(resident, offset);
+
+    struct vm_resident_page *page_l = NULL;
+    if (!page_u && use_priv)
+        page_l = vm_resident_get_page(object->resident, offset);
+
+    // Need to get a new page from the backing layer?
+    if (!page_u && (!use_priv || !page_l)) {
+        if (object->is_anonymous) {
+            page_u = vm_resident_alloc_page(resident, offset);
+            if (!page_u)
+                return false; // OOM
+        } else {
+            if (!object->ops->read_page)
+                return false; // whatever
+            // This may block and generally change the state in an unknown way.
+            // On success, let the user simply retry the access (read_page won't
+            // create the PTE, so strictly speaking this adds overhead).
+            return object->ops->read_page(object->ops_ud, offset) >= 0;
+        }
+    }
+
+    // There is a page in the backing layer, so reference it.
+    if (!page_u && page_l) {
+        if (write) {
+            // Map the page from the lower layer if present.
+            page_u = vm_resident_share_page(resident, offset, page_l);
+            if (!page_u)
+                return false; // OOM
+        } else {
+            // We can read from it. We must not set it up for COW, because we're
+            // still supposed see see foreign writes into the backing store. (So
+            // just R/O map it; don't make it part of the upper vm_resident.)
+            page_u = page_l;
+            allow_write = false;
+        }
+    }
+
+    if (!page_u)
+        return false; // (can this even happen)
+
+    if (write && !vm_resident_make_writeable(page_u))
+        return false; // OOM
+
+    allow_write &= vm_resident_is_writeable(page_u);
+
+    int map_flags = MMU_FLAG_RMAP;
+    if ((m->flags & KERN_MAP_PERM_W) && allow_write)
+        map_flags |= MMU_FLAG_W;
+    if (m->flags & KERN_MAP_PERM_R)
+        map_flags |= MMU_FLAG_R;
+    if (m->flags & KERN_MAP_PERM_X)
+        map_flags |= MMU_FLAG_X;
+
+    return mmu_map(as->mmu, (void *)iaddr, page_u->phys_addr, PAGE_SIZE, map_flags);
 }

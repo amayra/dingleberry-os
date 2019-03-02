@@ -5,7 +5,7 @@ CFLAGS = $(COMMON_CFLAGS) -ffreestanding -mno-save-restore -mcmodel=medany -mexp
 LDFLAGS = -T $(BUILD)/kernel.ld -melf64lriscv
 
 OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o mmu.o trap.o kmalloc.o \
-          syscalls.o thread.o \
+          syscalls.o thread.o virtual_memory.o \
           shared/libinsanity/printf.o \
           $(MUSL)/src/string/memcpy.o \
           $(MUSL)/src/string/memmove.o \

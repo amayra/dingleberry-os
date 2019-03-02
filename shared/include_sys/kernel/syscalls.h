@@ -34,7 +34,7 @@ struct sys_thread_regs {
 #define KERN_MAP_PERM_W         (1 << 1)
 #define KERN_MAP_PERM_X         (1 << 2)
 // If addr is given, and if it collides with an existing mapping, overwrite it,
-// instead of failing. Similar to Linux MAP_FIXED_NOREPLACE.
+// instead of failing. Similar to Linux MAP_FIXED_NOREPLACE (inverted).
 // Has no effect if addr==-1.
 #define KERN_MAP_OVERWRITE      (1 << 3)
 // Mark the mapping as COW. Successful writes to mapping will allocate private

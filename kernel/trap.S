@@ -20,7 +20,7 @@
 #define THREAD_KERNEL_GP    (7 * 8)
 
 /* Number of entries in syscall_table[]. */
-#define ASM_SYSCALL_COUNT   4
+#define ASM_SYSCALL_COUNT   5
 
 /* Load/Store operation for all registers, _except_ sp (x2) and tp (x4). */
 #define ALL_REGS_LS(INS, BASE, BREG)    \

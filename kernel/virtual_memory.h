@@ -1,5 +1,11 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <kernel/syscalls.h>
+
 // Manages a list of virtual memory mappings in a user address space.
 struct vm_aspace;
 
@@ -8,6 +14,9 @@ struct vm_aspace;
 struct vm_object_ref;
 
 struct vm_aspace *vm_aspace_create(void);
+
+struct mmu;
+struct mmu *vm_aspace_get_mmu(struct vm_aspace *as);
 
 // Mirrors classic mmap(). obj remains owned by the caller only.
 //  addr: userspace desired address, or -1 if any
@@ -89,6 +98,9 @@ struct vm_object_ops {
     // check whether the page is present.
     // Returns 0 on success, <0 on error.
     int (*read_page)(void *ud, uint64_t offset);
+    // Called when the last reference to it is destroyed.
+    // TODO: how is this supposed to work if the implementer may have to create
+    //       a reference to maintain the object?
     void (*free)(void *ud);
 };
 
@@ -113,3 +125,8 @@ struct vm_object_ref *vm_objref_dup(struct vm_object_ref *ref);
 // to underlying VM objects, and refcounted on its own. Accessing ref after this
 // call is undefined, but misuse is not detectable.
 void vm_objref_unref(struct vm_object_ref *ref);
+
+// Returns whether we think the page fault was handled. If it returns false,
+// invoke a crash handler. If it returns true, retry.
+// access is exactly one of KERN_MAP_PERM_R/KERN_MAP_PERM_W/KERN_MAP_PERM_X.
+bool vm_aspace_handle_page_fault(struct vm_aspace *as, void *addr, int access);

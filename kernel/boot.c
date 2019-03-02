@@ -8,6 +8,7 @@
 #include "page_alloc.h"
 #include "slob.h"
 #include "thread.h"
+#include "virtual_memory.h"
 
 extern char _start;
 extern char _end;
@@ -225,9 +226,11 @@ static void fdt_parse(void *fdt)
 }
 
 // Load a userspace executable into the given address space.
-static void load_elf(void *elf, size_t elf_size, struct mmu *mmu,
+static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
                      uintptr_t *out_entry)
 {
+    struct mmu *mmu = vm_aspace_get_mmu(as);
+
     if ((uintptr_t)elf & 7)
         panic("ELF loader input not aligned.\n");
 
@@ -286,6 +289,11 @@ static void load_elf(void *elf, size_t elf_size, struct mmu *mmu,
         size_t num_pages = phdr->p_memsz / PAGE_SIZE +
             ((phdr->p_memsz & (PAGE_SIZE - 1)) +
              (phdr->p_vaddr & (PAGE_SIZE - 1)) + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        // Still some time until this can use mmap(), so just "reserve" address
+        // space, so we can manipulate MMU PTEs directly.
+        if (!vm_reserve(as, (void *)vaddr_a, num_pages * PAGE_SIZE))
+            panic("Failed to reserve address space for ELF.\n");
 
         for (size_t n = 0; n < num_pages; n++) {
             uintptr_t vaddr = vaddr_a + n * PAGE_SIZE;
@@ -535,30 +543,23 @@ static void continue_boot(void)
     if (!root_elf)
         panic("initrd rootprocess entry not found.\n");
 
-    struct mmu *user_mmu = mmu_alloc();
-    if (!user_mmu)
+    struct vm_aspace *as = vm_aspace_create();
+    if (!as)
         panic("Could not allocate user addressspace.\n");
 
     uintptr_t entrypoint;
-    load_elf(root_elf, root_elf_size, user_mmu, &entrypoint);
+    load_elf(root_elf, root_elf_size, as, &entrypoint);
 
     // Create a stack at the end of the user address space.
     size_t user_stack_size = PAGE_SIZE * 16;
     uintptr_t user_stack =
         (MMU_ADDRESS_LOWER_MAX & ~(uintptr_t)(PAGE_SIZE - 1)) -
         PAGE_SIZE * 1024 - user_stack_size;
-    for (size_t n = 0; n < user_stack_size; n+= PAGE_SIZE) {
-        uint64_t phys = page_alloc_phy(1, PAGE_USAGE_USER);
-        if (phys == INVALID_PHY_ADDR)
-            panic("Out of memory while allocating user stack.\n");
-
-        if (!mmu_map(user_mmu, (void *)(user_stack + n), phys, PAGE_SIZE,
-                     MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_RMAP))
-            panic("Could not map user stack page.\n");
-
-        void *page = page_phys_to_virt(phys);
-        memset(page, 0, PAGE_SIZE);
-    }
+    void *r = vm_mmap(as, (void *)user_stack, user_stack_size,
+                      KERN_MAP_FORK_COPY | KERN_MAP_PERM_W | KERN_MAP_PERM_R,
+                      NULL, 0);
+    if (KERN_MMAP_FAILED(r))
+        panic("Failed to map user stack.\n");
 
     page_alloc_debug_dump();
 
@@ -571,7 +572,7 @@ static void continue_boot(void)
     regs.status = 1 << 1;
     regs.regs[2] = user_stack + user_stack_size;
     regs.pc = entrypoint;
-    struct thread *ut = thread_create(user_mmu,  &regs);
+    struct thread *ut = thread_create(as,  &regs);
     assert(ut);
 
     printf("user thread: %p\n", ut);

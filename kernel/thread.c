@@ -5,6 +5,7 @@
 #include "opensbi.h"
 #include "page_alloc.h"
 #include "thread.h"
+#include "virtual_memory.h"
 
 #define KERNEL_STACK_MIN (PAGE_SIZE / 2)
 
@@ -51,6 +52,7 @@ struct thread {
     void *kernel_sp;
     void *kernel_pc;
 
+    struct vm_aspace *aspace;
     struct mmu *mmu;
 
     struct {
@@ -75,10 +77,11 @@ struct thread {
 static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
 static_assert(!(sizeof(struct thread) & (STACK_ALIGNMENT - 1)), "");
 
-struct thread *thread_create(struct mmu *mmu, struct asm_regs *init_regs)
+struct thread *thread_create(struct vm_aspace *aspace, struct asm_regs *init_regs)
 {
     struct mmu *kmmu = mmu_get_kernel();
-    bool is_kernel = mmu == kmmu;
+    struct mmu *mmu = aspace ? vm_aspace_get_mmu(aspace) : kmmu;
+    bool is_kernel = !aspace;
 
     int pages =
         (KERNEL_STACK_MIN + sizeof(struct thread) + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -97,12 +100,13 @@ struct thread *thread_create(struct mmu *mmu, struct asm_regs *init_regs)
         if (page == INVALID_PHY_ADDR)
             goto fail;
         if (!mmu_map(kmmu, (char *)base + n * PAGE_SIZE, page, PAGE_SIZE,
-                        MMU_FLAG_R | MMU_FLAG_W))
+                     MMU_FLAG_R | MMU_FLAG_W))
             goto fail;
     }
 
     struct thread *t = (void *)((char *)base + pages * PAGE_SIZE - sizeof(*t));
     *t = (struct thread){
+        .aspace = aspace,
         .mmu = mmu,
         .base = base,
     };
@@ -141,12 +145,12 @@ struct thread *thread_create_kernel(void (*thread)(void *ctx), void *ctx)
     struct asm_regs regs = {0};
     regs.regs[10] = (uintptr_t)ctx; // a0
     regs.pc = (uintptr_t)thread;
-    return thread_create(mmu_get_kernel(), &regs);
+    return thread_create(NULL, &regs);
 }
 
-struct mmu *thread_get_mmu(struct thread *t)
+struct vm_aspace *thread_get_aspace(struct thread *t)
 {
-    return t->mmu;
+    return t->aspace;
 }
 
 struct thread *thread_current(void)
@@ -309,15 +313,26 @@ void c_trap(struct asm_regs *ctx)
     } else {
         // The RISC-V spec. doesn't define what most of the exception codes
         // actually mean (lol?). The intention is to catch all page faults that
-        // are caused by memory data accesses in kernel space.
-        if (ctx->cause == 13 || ctx->cause == 15) {
-            if (g_filter_kernel_pagefault) {
-                if (g_filter_kernel_pagefault(ctx, (void *)(uintptr_t)ctx->tval)) {
+        // are caused by missing mmu PTE flags.
+        if (ctx->cause == 13 || ctx->cause == 15 || ctx->cause == 12) {
+            void *fault_addr = (void *)(uintptr_t)ctx->tval;
+            if (g_filter_kernel_pagefault && ctx->cause != 12) {
+                if (g_filter_kernel_pagefault(ctx, fault_addr)) {
                     show_crash(ctx);
                     printf("(filterted)\n");
                     return;
                 }
             }
+            int access = 0;
+            switch (ctx->cause) {
+            case 13: access = KERN_MAP_PERM_R; break;
+            case 15: access = KERN_MAP_PERM_W; break;
+            case 12: access = KERN_MAP_PERM_X; break;
+            default: assert(0);
+            }
+            struct vm_aspace *as = thread_get_aspace(thread_current());
+            if (vm_aspace_handle_page_fault(as, fault_addr, access))
+                return;
         }
         show_crash(ctx);
         panic("stop.\n");
