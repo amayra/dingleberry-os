@@ -2,6 +2,7 @@
 #include <elf.h>
 
 #include "kernel.h"
+#include "kmalloc.h"
 #include "memory.h"
 #include "mmu.h"
 #include "opensbi.h"
@@ -225,11 +226,67 @@ static void fdt_parse(void *fdt)
     printf("FDT end.\n");
 }
 
+struct mem_file {
+    struct vm_object_ref *vm;
+    void *start;
+    size_t size;
+};
+
+static int mem_file_read_page(void *ud, uint64_t offset)
+{
+    struct mem_file *priv = ud;
+
+    assert(offset < priv->size);
+
+    uint64_t phys = vm_objref_page_create_phys(priv->vm, offset);
+    if (phys == INVALID_PHY_ADDR)
+        return -1;
+
+    void *addr = page_phys_to_virt(phys);
+    assert(addr);
+
+    size_t size = MIN(priv->size - offset, PAGE_SIZE);
+    printf("page in %ld %zd -> %lx\n", (long)offset, size, (long)phys);
+
+    memcpy(addr, (char *)priv->start + offset, size);
+    memset((char *)addr + size, 0, PAGE_SIZE - size);
+    return 0;
+}
+
+static const struct vm_object_ops mem_file_ops = {
+    .read_page = mem_file_read_page,
+};
+
+static struct vm_object_ref *create_mem_file(void *start, size_t size)
+{
+    struct mem_file *priv = mallocz(sizeof(struct mem_file));
+    if (!priv)
+        return NULL;
+
+    *priv = (struct mem_file){
+        .start = start,
+        .size = size,
+        .vm = vm_objref_create(&mem_file_ops, priv),
+    };
+
+    if (!priv->vm) {
+        free(priv);
+        return NULL;
+    }
+
+    vm_objref_set_size(priv->vm, size);
+
+    return priv->vm;
+}
+
 // Load a userspace executable into the given address space.
+// Uses the VM system, and *elf must remain allocated.
 static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
                      uintptr_t *out_entry)
 {
-    struct mmu *mmu = vm_aspace_get_mmu(as);
+    struct vm_object_ref *file = create_mem_file(elf, elf_size);
+    if (!file)
+        panic("Failed to allocate VM object.\n");
 
     if ((uintptr_t)elf & 7)
         panic("ELF loader input not aligned.\n");
@@ -264,13 +321,13 @@ static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
         if (phdr->p_type != PT_LOAD)
             continue;
 
-        // (This code is structured vaguely to support mmap() in the future.)
         if ((phdr->p_offset % PAGE_SIZE) != (phdr->p_vaddr % PAGE_SIZE))
             panic("ELF program header offsets not congruent.\n");
 
-        int mmu_flags = ((phdr->p_flags & 1) ? MMU_FLAG_X : 0) |
-                        ((phdr->p_flags & 2) ? MMU_FLAG_W : 0) |
-                        ((phdr->p_flags & 4) ? MMU_FLAG_R : 0);
+        int map_flags = ((phdr->p_flags & 1) ? KERN_MAP_PERM_X : 0) |
+                        ((phdr->p_flags & 2) ? KERN_MAP_PERM_W : 0) |
+                        ((phdr->p_flags & 4) ? KERN_MAP_PERM_R : 0) |
+                        KERN_MAP_FORK_COPY | KERN_MAP_OVERWRITE;
 
         if (phdr->p_offset > elf_size ||
             elf_size < phdr->p_offset + phdr->p_filesz)
@@ -281,50 +338,47 @@ static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
         uintptr_t offs_a = phdr->p_offset & ~(uintptr_t)(PAGE_SIZE - 1);
 
         uintptr_t vaddr_a = phdr->p_vaddr & ~(uintptr_t)(PAGE_SIZE - 1);
+        uintptr_t vaddr_end = phdr->p_vaddr + phdr->p_memsz;
+        uintptr_t vaddr_end_a = (vaddr_end + PAGE_SIZE - 1) &
+                                ~(uintptr_t)(PAGE_SIZE - 1);
 
-        if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr)
+        if (vaddr_end < phdr->p_vaddr)
             panic("ELF PHDR virtual address overflow.\n");
 
-        // Including partial pages at start/end. (Is this code even correct...)
-        size_t num_pages = phdr->p_memsz / PAGE_SIZE +
-            ((phdr->p_memsz & (PAGE_SIZE - 1)) +
-             (phdr->p_vaddr & (PAGE_SIZE - 1)) + PAGE_SIZE - 1) / PAGE_SIZE;
+        // Mapped file data (starting at offs_a/vaddr_a).
+        size_t file_size =
+            (offs_end - offs_a + PAGE_SIZE - 1) & ~(uintptr_t)(PAGE_SIZE - 1);
+        // Mapped anonymous memory (starting at vaddr_a+file_size).
+        size_t anon_size = vaddr_end_a - (vaddr_a + file_size);
 
-        // Still some time until this can use mmap(), so just "reserve" address
-        // space, so we can manipulate MMU PTEs directly.
-        if (!vm_reserve(as, (void *)vaddr_a, num_pages * PAGE_SIZE))
-            panic("Failed to reserve address space for ELF.\n");
+        // Number of bytes to before the end of the file mapped region (to zero
+        // out partial BSS). If 0, clear nothing.
+        size_t clear_size = phdr->p_memsz > phdr->p_filesz ?
+                            (offs_end & (PAGE_SIZE - 1)) : 0;
 
-        for (size_t n = 0; n < num_pages; n++) {
-            uintptr_t vaddr = vaddr_a + n * PAGE_SIZE;
-            uintptr_t offs = offs_a + n * PAGE_SIZE;
+        if (file_size) {
+            void *a = vm_mmap(as, (void *)vaddr_a, file_size,
+                              map_flags | KERN_MAP_COW, file, offs_a);
+            if (KERN_MMAP_FAILED(a))
+                panic("Could not map ELF file.\n");
 
-            uint64_t phys = page_alloc_phy(1, PAGE_USAGE_USER);
-            if (phys == INVALID_PHY_ADDR)
-                panic("Out of memory while loading ELF program.\n");
-
-            // (This also fails if the ELF uses kernel addresses.)
-            if (!mmu_map(mmu, (void *)vaddr, phys, PAGE_SIZE, mmu_flags))
-                panic("Could not map ELF program page.\n");
-
-            void *page = page_phys_to_virt(phys);
-
-            if (offs < offs_end) {
-                size_t copy = PAGE_SIZE;
-
-                // (mmap() would fill partial mappings with zeros.)
-                copy = MIN(copy, offs_end - offs);
-
-                memcpy(page, (char *)elf + offs, copy);
-
-                // Zero out partial BSS. (It appears you would need to do this
-                // even with mmap(), because the section data can still be
-                // followed by further ELF data.)
-                if (copy < PAGE_SIZE)
-                    memset((char *)page + copy, 0, PAGE_SIZE - copy);
-            } else {
-                memset(page, 0, PAGE_SIZE);
+            if (clear_size) {
+                uintptr_t clear_addr = vaddr_a + file_size - PAGE_SIZE;
+                uint64_t phys = vm_aspace_get_phys(as, (void *)clear_addr,
+                                                   KERN_MAP_PERM_W);
+                if (phys == INVALID_PHY_ADDR)
+                    panic("Could not touch partial .bss page.\n");
+                a = page_phys_to_virt(phys);
+                assert(a);
+                memset((char *)a + PAGE_SIZE - clear_size, 0, clear_size);
             }
+        }
+
+        if (anon_size) {
+            void *a = vm_mmap(as, (void *)(vaddr_a + file_size), anon_size,
+                              map_flags, NULL, 0);
+            if (KERN_MMAP_FAILED(a))
+                panic("Could not map ELF .bss.\n");
         }
     }
 

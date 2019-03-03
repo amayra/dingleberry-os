@@ -63,7 +63,7 @@ struct vm_object {
     bool is_anonymous;
 
     // Actual backend. This is essentially the page fault handler.
-    struct vm_object_ops *ops;
+    const struct vm_object_ops *ops;
     void *ops_ud;
 
     // Cached RAM pages. Shared mappings of vm_object use this. Private mappings
@@ -206,7 +206,7 @@ static void vm_resident_destroy_page(struct vm_resident_page *page)
     phys_page->u.user.vm_refcount -= 1;
 
     if (phys_page->u.user.vm_refcount == 0)
-        page_free_phy(page->phys_addr, PAGE_SIZE);
+        page_free_phy(page->phys_addr, 1);
 }
 
 static void vm_resident_unref(struct vm_resident *res)
@@ -276,7 +276,7 @@ static struct vm_resident_page *vm_resident_get_page(struct vm_resident *res,
 }
 
 // Make sure the given page referenced is writable. Returns false on OOM.
-static bool vm_resident_make_writeable(struct vm_resident_page *page)
+static bool vm_resident_make_writable(struct vm_resident_page *page)
 {
     struct phys_page *phys_page = vm_resident_get_phys_page(page);
 
@@ -295,7 +295,7 @@ static bool vm_resident_make_writeable(struct vm_resident_page *page)
 
         assert(phys_page_new);
         assert(phys_page_new->usage == PAGE_USAGE_USER);
-        assert(phys_page->u.user.vm_refcount == 0);
+        assert(phys_page_new->u.user.vm_refcount == 0);
 
         void *src = page_phys_to_virt(page->phys_addr);
         void *dst = page_phys_to_virt(phys);
@@ -313,7 +313,7 @@ static bool vm_resident_make_writeable(struct vm_resident_page *page)
     return true;
 }
 
-static bool vm_resident_is_writeable(struct vm_resident_page *page)
+static bool vm_resident_is_writable(struct vm_resident_page *page)
 {
     struct phys_page *phys_page = vm_resident_get_phys_page(page);
     return phys_page->u.user.vm_refcount == 1;
@@ -415,13 +415,19 @@ static void vm_aspace_dump(struct vm_aspace *as)
 {
     printf("vm_aspace %p:\n", as);
     for (struct vm_mapping *m = as->mappings.head; m; m = m->mappings.next) {
-        char perm[] = "RWX";
-        if (!(m->flags & KERN_MAP_PERM_R))
-            perm[0] = '-';
-        if (!(m->flags & KERN_MAP_PERM_W))
-            perm[1] = '-';
-        if (!(m->flags & KERN_MAP_PERM_X))
-            perm[2] = '-';
+        char perm[] = "--- -- -";
+        if (m->flags & KERN_MAP_PERM_R)
+            perm[0] = 'R';
+        if (m->flags & KERN_MAP_PERM_W)
+            perm[1] = 'W';
+        if (m->flags & KERN_MAP_PERM_X)
+            perm[2] = 'X';
+        if (m->flags & KERN_MAP_FORK_COPY)
+            perm[4] = 'C';
+        if (m->flags & KERN_MAP_FORK_SHARE)
+            perm[5] = 'S';
+        if (m->data.object && m->data.object->resident != m->data.resident)
+            perm[7] = 'P';
         printf("  %016lx - %016lx %s\n", (long)m->virt_start,
                (long)m->virt_end, perm);
     }
@@ -520,6 +526,8 @@ static void mapping_clamp(struct vm_aspace *as, struct vm_mapping *m,
 // (m must not be in as->mappings, or have entries in mmu yet)
 static void mapping_destroy_only(struct vm_mapping *m)
 {
+    assert(m->data.refcount == 1);
+    m->data.refcount = 0;
     vm_objref_destroy(&m->data);
     slob_free(&slob_vm_mapping, m);
 }
@@ -559,7 +567,10 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
     uintptr_t start = (uintptr_t)addr;
     uintptr_t end = start + length;
 
+    vm_aspace_dump(as);
+
     struct vm_mapping *a = vm_aspace_lookup(as, addr);
+    printf("%p -> %p\n", (void *)addr, a);
     if (!a)
         return true; // nothing was mapped at addr or after
 
@@ -581,7 +592,9 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
     // A single region is split into 3 (or 2 on unmap).
     bool ab_split = a == b && a_split && b_split;
 
-    struct vm_mapping *inner_a = a;
+    printf("splitinser %p %p %d %d %d\n", a, b, a_split, b_split, ab_split);
+
+    struct vm_mapping *inner_a = a->virt_end < end ? a : a->mappings.next;
     struct vm_mapping *inner_b = b->mappings.next;
 
     if (a_split) {
@@ -615,9 +628,9 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
 
     if (unmap) {
         while (inner_a) {
-            struct vm_mapping *next = inner_a->mappings.next;
-            if (next == inner_b)
+            if (inner_a == inner_b)
                 break;
+            struct vm_mapping *next = inner_a->mappings.next;
             mapping_destroy_unlink(as, inner_a);
             inner_a = next;
         }
@@ -644,10 +657,12 @@ static bool vm_insert_mapping(struct vm_aspace *as, struct vm_mapping *new,
                               bool overwrite)
 {
     struct vm_mapping *unused1, *unused2;
+    printf("map %p - %p\n", (void*)new->virt_start, (void *)new->virt_end);
     if (!split_map(as, (void *)new->virt_start, new->virt_end - new->virt_start,
                    true, overwrite, &unused1, &unused2))
     {
         mapping_destroy_only(new);
+        printf("fail\n");
         return false;
     }
 
@@ -707,6 +722,7 @@ void *vm_mmap(struct vm_aspace *as, void *addr, size_t length, int flags,
     struct vm_object_ref *ref = NULL;
     if (obj) {
         ref = vm_objref_dup(obj);
+        ref->offset_a += offset; // TODO: or is this absolute
     } else {
         if (offset)
             goto fail; // invalid parameter
@@ -861,6 +877,8 @@ static struct vm_object_ref *vm_objref_create_internal(
 
     obj->refcount = 1;
     obj->is_anonymous = ops == &anon_mem_ops;
+    obj->ops = ops;
+    obj->ops_ud = ud;
 
     obj->resident = vm_resident_mooh(base_res);
     if (!obj->resident) {
@@ -952,8 +970,22 @@ fail:
     return false;
 }
 
+/*
 int vm_objref_page_ctrl(struct vm_object_ref *ref, uint64_t offset, int flags)
 {
+}
+*/
+
+uint64_t vm_objref_page_create_phys(struct vm_object_ref *ref, uint64_t offset)
+{
+    if (!ref->object)
+        return INVALID_PHY_ADDR;
+
+    struct vm_resident_page *page = vm_resident_get_page(ref->resident, offset);
+    if (!page)
+        page = vm_resident_alloc_page(ref->resident, offset);
+
+    return page ? page->phys_addr : INVALID_PHY_ADDR;
 }
 
 void vm_objref_set_size(struct vm_object_ref *ref, uint64_t size)
@@ -1055,10 +1087,10 @@ bool vm_aspace_handle_page_fault(struct vm_aspace *as, void *addr, int access)
     if (!page_u)
         return false; // (can this even happen)
 
-    if (write && !vm_resident_make_writeable(page_u))
+    if (write && !vm_resident_make_writable(page_u))
         return false; // OOM
 
-    allow_write &= vm_resident_is_writeable(page_u);
+    allow_write &= vm_resident_is_writable(page_u);
 
     int map_flags = MMU_FLAG_RMAP;
     if ((m->flags & KERN_MAP_PERM_W) && allow_write)
@@ -1068,5 +1100,34 @@ bool vm_aspace_handle_page_fault(struct vm_aspace *as, void *addr, int access)
     if (m->flags & KERN_MAP_PERM_X)
         map_flags |= MMU_FLAG_X;
 
+    printf("map %p: %p -> %lx 0x%x\n", as->mmu, (void *)iaddr, (long)page_u->phys_addr, map_flags);
     return mmu_map(as->mmu, (void *)iaddr, page_u->phys_addr, PAGE_SIZE, map_flags);
+}
+
+uint64_t vm_aspace_get_phys(struct vm_aspace *as, void *addr, int access)
+{
+    if (!vm_aspace_handle_page_fault(as, addr, access))
+        return INVALID_PHY_ADDR;
+
+    uint64_t phys;
+    size_t ps;
+    int flags;
+
+    if (!mmu_read_entry(as->mmu, addr, &phys, &ps, &flags))
+        return INVALID_PHY_ADDR;
+
+    if (phys == INVALID_PHY_ADDR) {
+        // At least one code path forces a "retry". This is normally reasonably
+        // transparent, but is annoying for this function.
+        if (!vm_aspace_handle_page_fault(as, addr, access))
+            return INVALID_PHY_ADDR;
+
+        mmu_read_entry(as->mmu, addr, &phys, &ps, &flags);
+
+        // Should not happen, especially because there's no concurrency within
+        // the kernel.
+        assert(phys != INVALID_PHY_ADDR);
+    }
+
+    return phys;
 }

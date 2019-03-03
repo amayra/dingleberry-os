@@ -75,6 +75,13 @@ enum {
 //  returns: success on >=0, error on <0
 int vm_objref_page_ctrl(struct vm_object_ref *ref, uint64_t offset, int flags);
 
+// Allocate (or retrieve if existing) a page at the given page-aligned offset.
+// Return INVALID_PHY_ADDR on failure. On success, this is a writable page
+// located in the object's RAM cache.
+// Since there is no kernel concurrency, the address stays valid until you know
+// when. This is a hack for bootstrap kernel VM interaction.
+uint64_t vm_objref_page_create_phys(struct vm_object_ref *ref, uint64_t offset);
+
 //TODO: operations for dropping permissions etc. (e.g. the idea is to have a
 //      permission bit for calling privileged operations like
 //      VM_PAGE_CTRL_LOCK_*, and drop it before returning it to a user)
@@ -130,3 +137,8 @@ void vm_objref_unref(struct vm_object_ref *ref);
 // invoke a crash handler. If it returns true, retry.
 // access is exactly one of KERN_MAP_PERM_R/KERN_MAP_PERM_W/KERN_MAP_PERM_X.
 bool vm_aspace_handle_page_fault(struct vm_aspace *as, void *addr, int access);
+
+// Resolve an access to the given address and return the physical address (or
+// INVALID_PHY_ADDR on failure). This is a hack for the kernel and just goes
+// though the page fault code.
+uint64_t vm_aspace_get_phys(struct vm_aspace *as, void *addr, int access);

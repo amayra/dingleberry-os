@@ -35,7 +35,7 @@ struct header {
         // long double, which we don't use in the kernel.
         uintmax_t align_1;
         void *align_2;
-        atomic_ullong align3;
+        atomic_ullong align_3;
     };
 };
 
@@ -122,13 +122,18 @@ void free(void *ptr)
     assert(h->magic == KMALLOC_MAGIC);
     h->magic = 0xDEDEDEDEDEDEDEDEULL;
 
-    if (h->size < PAGE_SIZE) {
-        unsigned bin = get_bin(h->size);
+    size_t size = h->size;
+
+    // memory poisoning for idiots
+    memset(h, 0xDE, size);
+
+    if (size < PAGE_SIZE) {
+        unsigned bin = get_bin(size);
         assert(bin < NUM_BINS);
         assert(slobs_initialized[bin]);
         slob_free(&slobs[bin], h);
     } else {
-        page_free(h, h->size);
+        page_free(h, size);
     }
 }
 
@@ -149,8 +154,12 @@ void *reallocz(void *ptr, size_t size)
     size_t old_size = h->size - sizeof(struct header);
 
     // (if more than 1/4 gets unused, realloc)
-    if (old_size >= size && size >= old_size / 4)
+    if (old_size >= size && size >= old_size / 4) {
+        // (this is still a *z variant function)
+        if (size < old_size)
+            memset((char *)ptr + size, 0, old_size - size);
         return ptr;
+    }
 
     // Actually realloc. Slobs can carry only 1 size, and page_alloc() doesn't
     // support extension (sort of, due to debug stuff), so just copy.

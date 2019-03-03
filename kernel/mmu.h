@@ -63,7 +63,7 @@ struct mmu *mmu_get_kernel(void);
 //  size: size of the mapping; must be exactly PAGE_SIZE
 //  flags: MMU_FLAG_* flags
 // Returns: success
-bool mmu_map(struct mmu* mmu, void *virt, uint64_t phys, size_t size, int flags);
+bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags);
 
 // Change the memory mapping at the given address.
 //  virt: exact/page aligned virtual address of a memory page
@@ -73,7 +73,13 @@ bool mmu_map(struct mmu* mmu, void *virt, uint64_t phys, size_t size, int flags)
 // It also fails if virt is not aligned, or if any of the flags are not allowed.
 // Some flags can't be changed: MMU_FLAG_RMAP
 // Returns: success
-bool mmu_protect(struct mmu* mmu, void *virt, int remove_flags, int add_flags);
+bool mmu_protect(struct mmu *mmu, void *virt, int remove_flags, int add_flags);
+
+// Reverse of mmu_map(). Unmapped entries are returned as success with *phys_out
+// set to INVALID_PHY_ADDR. Returns failure only if virt is not a valid mapping
+// address (then out_* are set as if it were an unmapped entry).
+bool mmu_read_entry(struct mmu *mmu, void *virt, uint64_t *phys_out,
+                    size_t *size_out, int *flags_out);
 
 // Remove MMU_FLAG_W from all known MMU_FLAG_RMAP mappings with the given
 // physical address. This does not affect mappings which were not mapped with
@@ -87,7 +93,7 @@ void mmu_rmap_mark_ro(uint64_t phys);
 // know about the unmapping.
 void mmu_rmap_unmap(uint64_t phys);
 
-void mmu_switch_to(struct mmu* mmu);
+void mmu_switch_to(struct mmu *mmu);
 
 // Return true iff addr/size is generally a valid region within userspace. This
 // checks alignment (as allowed by mmu_map()) too.

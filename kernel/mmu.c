@@ -206,7 +206,7 @@ static uint64_t read_pt(struct mmu *mmu, uintptr_t virt)
 }
 
 // Internal; users use mmu_map() to unmap.
-static void mmu_unmap(struct mmu* mmu, void *virt)
+static void mmu_unmap(struct mmu *mmu, void *virt)
 {
     uintptr_t ivirt = (uintptr_t)virt;
 
@@ -302,7 +302,7 @@ static bool validate_vaddr(struct mmu *mmu, uintptr_t ivirt, size_t size,
     return true;
 }
 
-bool mmu_map(struct mmu* mmu, void *virt, uint64_t phys, size_t size, int flags)
+bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags)
 {
     uintptr_t ivirt = (uintptr_t)virt;
 
@@ -362,7 +362,7 @@ bool mmu_map(struct mmu* mmu, void *virt, uint64_t phys, size_t size, int flags)
     return true;
 }
 
-bool mmu_protect(struct mmu* mmu, void *virt, int remove_flags, int add_flags)
+bool mmu_protect(struct mmu *mmu, void *virt, int remove_flags, int add_flags)
 {
     uintptr_t ivirt = (uintptr_t)virt;
 
@@ -387,6 +387,29 @@ bool mmu_protect(struct mmu* mmu, void *virt, int remove_flags, int add_flags)
 
     bool r = write_pt(mmu, ivirt, pte, false);
     assert(r); // can't fail, no page tables could have been missing/allocated
+
+    return true;
+}
+
+bool mmu_read_entry(struct mmu *mmu, void *virt, uint64_t *phys_out,
+                    size_t *size_out, int *flags_out)
+{
+    *phys_out = INVALID_PHY_ADDR;
+    *size_out = PAGE_SIZE;
+    *flags_out = 0;
+
+    uintptr_t ivirt = (uintptr_t)virt;
+
+    if (!validate_vaddr(mmu, ivirt, PAGE_SIZE, 0))
+        return false;
+
+        // (if superpages are ever added, we'll need this early to query their size)
+    uint64_t pte = read_pt(mmu, ivirt);
+
+    if (pte & MMU_FLAG_V) {
+        *phys_out = PTE_GET_PHYS(pte);
+        *flags_out = pte & ((1 << 8) - 1);
+    }
 
     return true;
 }
@@ -422,7 +445,7 @@ void mmu_rmap_unmap(uint64_t phys)
     }
 }
 
-void mmu_switch_to(struct mmu* mmu)
+void mmu_switch_to(struct mmu *mmu)
 {
     // Mode 9 = Sv48.
     uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(mmu->root_pt);

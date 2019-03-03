@@ -5,7 +5,7 @@ OBJCOPY = riscv64-linux-gnu-objcopy
 
 BUILD = build
 
-OPT_CFLAGS = -Os -g -ggdb -static
+OPT_CFLAGS = -O1 -g -ggdb -static
 WARN_CFLAGS = -Wall -Werror=format -Werror=implicit-function-declaration
 
 # Get compiler freestanding include path. Pretty much for stdatomic.h.

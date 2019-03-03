@@ -1,3 +1,4 @@
+#include "arch.h"
 #include "kernel.h"
 #include "linked_list.h"
 #include "mmu.h"
@@ -301,6 +302,7 @@ static void show_crash(struct asm_regs *ctx)
     const char *mode = ctx->status & (1 << 8) ? "super" : "user";
     printf("Happened in privilege level: %s\n", mode);
     printf("Current kernel stack: %p\n", &(char){0});
+    asm volatile("csrrs zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
 
     printf("\n");
 }
@@ -331,7 +333,7 @@ void c_trap(struct asm_regs *ctx)
             default: assert(0);
             }
             struct vm_aspace *as = thread_get_aspace(thread_current());
-            if (vm_aspace_handle_page_fault(as, fault_addr, access))
+            if (as && vm_aspace_handle_page_fault(as, fault_addr, access))
                 return;
         }
         show_crash(ctx);
