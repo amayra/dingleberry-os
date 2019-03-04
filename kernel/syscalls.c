@@ -109,6 +109,25 @@ static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
     return vm_mmap(as, addr, length, flags, NULL, offset);
 }
 
+static int syscall_fork(void)
+{
+    struct thread *t = thread_current();
+    struct vm_aspace *as = thread_get_aspace(t);
+    struct vm_aspace *as2 = vm_aspace_create();
+    if (!as2)
+        return -1;
+    struct asm_regs regs;
+    thread_fill_syscall_saved_regs(t, &regs);
+    regs.regs[10] = 0; // child
+    struct thread *t2 = thread_create(as2, &regs);
+    if (!t2)
+        panic("too cheap for error handling\n");
+    if (!vm_fork(as2, as))
+        panic("nope\n");
+    printf("fork thread %p as %p\n", t2, as2);
+    return 1; // parent (no PIDs yet, lol)
+}
+
 // All of the following offsets/sizes are hardcoded in ASM.
 
 struct syscall_entry {
@@ -122,5 +141,6 @@ const struct syscall_entry syscall_table[] = {
     [SYS_DEBUG_STOP]            = {0, syscall_debug_stop},
     [SYS_THREAD_CREATE]         = {0, syscall_thread_create},
     [SYS_MMAP]                  = {1, syscall_mmap},
+    [SYS_FORK]                  = {1, syscall_fork},
     // update ASM_SYSCALL_COUNT if you add or remove an entry
 };

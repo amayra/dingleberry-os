@@ -571,7 +571,7 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
 
     struct vm_mapping *a = vm_aspace_lookup(as, addr);
     printf("%p -> %p\n", (void *)addr, a);
-    if (!a)
+    if (!a || end <= a->virt_start)
         return true; // nothing was mapped at addr or after
 
     if (overwrite)
@@ -594,7 +594,7 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
 
     printf("splitinser %p %p %d %d %d\n", a, b, a_split, b_split, ab_split);
 
-    struct vm_mapping *inner_a = a->virt_end < end ? a : a->mappings.next;
+    struct vm_mapping *inner_a = a;
     struct vm_mapping *inner_b = b->mappings.next;
 
     if (a_split) {

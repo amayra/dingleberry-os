@@ -140,6 +140,20 @@ void thread_cr(int num)
           "memory");
 }
 
+int syscall_fork(void)
+{
+    register uintptr_t a0 asm("a0") = 0;
+    register uintptr_t a7 asm("a7") = SYS_FORK;
+    asm volatile("ecall"
+        : "=r" (a0),                                // clobber a0
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a7)
+        : "a1", "a2", "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+}
+
 static void bogus(void)
 {
     register uintptr_t a0 asm("a0") = (uintptr_t)0x1234;
@@ -159,6 +173,8 @@ static void bogus(void)
           "t0", "t1", "t2", "t3", "t4", "t5", "t6",
           "memory");
 }
+
+int dataseg = 123;
 
 int main(void)
 {
@@ -182,9 +198,22 @@ int main(void)
     thread_cr(2);
     thread_cr(3);
 
+    printf("before: %d\n", dataseg);
+
+    int t = syscall_fork();
+    printf("----- fork: %d\n", t);
+
+    volatile int counter = t * 40 + 10; // force on stack
+
+    printf("after: %d\n", dataseg);
+    if (t == 1)
+        dataseg = counter;
+    asm volatile("");
+    printf("after overwrite: %d\n", dataseg);
+
     while (1) {
         asm volatile("wfi");
-        printf("wfi wakeup (thread1)\n");
+        printf("wfi wakeup (thread1) fork=%d cnt=%d\n", t, counter++);
     }
     return 0;
 }

@@ -28,6 +28,8 @@ struct sys_thread_regs {
 //      anonymous mappings.
 #define SYS_MMAP                4
 
+#define SYS_FORK                5
+
 // Access permission bits. If a given combination cannot be provided by the
 // hardware, effective permissions may be increased.
 #define KERN_MAP_PERM_R         (1 << 0)

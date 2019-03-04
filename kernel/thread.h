@@ -39,6 +39,8 @@ struct thread *thread_create_kernel(void (*thread)(void *ctx), void *ctx);
 // Return current kernel thread.
 struct thread *thread_current(void);
 
+void thread_fill_syscall_saved_regs(struct thread *t, struct asm_regs *regs);
+
 // Return the thread's aspace.
 struct vm_aspace *thread_get_aspace(struct thread *t);
 

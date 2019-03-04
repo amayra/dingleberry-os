@@ -18,9 +18,10 @@
 #define THREAD_SYSCALL_TP   (5 * 8)
 #define THREAD_SYSCALL_PC   (6 * 8)
 #define THREAD_KERNEL_GP    (7 * 8)
+#define THREAD_SYSCALL_CS   (8 * 8)
 
 /* Number of entries in syscall_table[]. */
-#define ASM_SYSCALL_COUNT   5
+#define ASM_SYSCALL_COUNT   6
 
 /* Load/Store operation for all registers, _except_ sp (x2) and tp (x4). */
 #define ALL_REGS_LS(INS, BASE, BREG)    \
@@ -53,6 +54,21 @@
     INS x29, (BASE + 29 * 8)(BREG);     \
     INS x30, (BASE + 30 * 8)(BREG);     \
     INS x31, (BASE + 31 * 8)(BREG)
+
+/* Load/Store operation for C ABI callee-saved registers. */
+#define CALLEE_SAVED_LS(INS, BASE, BREG)\
+    INS s0,  (BASE +  0 * 8)(BREG);     \
+    INS s1,  (BASE +  1 * 8)(BREG);     \
+    INS s2,  (BASE +  2 * 8)(BREG);     \
+    INS s3,  (BASE +  3 * 8)(BREG);     \
+    INS s4,  (BASE +  4 * 8)(BREG);     \
+    INS s5,  (BASE +  5 * 8)(BREG);     \
+    INS s6,  (BASE +  6 * 8)(BREG);     \
+    INS s7,  (BASE +  7 * 8)(BREG);     \
+    INS s8,  (BASE +  8 * 8)(BREG);     \
+    INS s9,  (BASE +  9 * 8)(BREG);     \
+    INS s10, (BASE + 10 * 8)(BREG);     \
+    INS s11, (BASE + 11 * 8)(BREG);
 
 .section ".text", "ax"
 
@@ -102,6 +118,8 @@ trap:
     sd ra, (THREAD_SYSCALL_SP)(tp)
     ld ra, (THREAD_SCRATCH_TP)(tp)
     sd ra, (THREAD_SYSCALL_TP)(tp)
+
+    CALLEE_SAVED_LS(sd, THREAD_SYSCALL_CS, tp)
 
     csrr ra, sepc
     addi ra, ra, 4
@@ -154,6 +172,8 @@ trap:
     ld sp, (THREAD_SYSCALL_SP)(t0)
     ld gp, (THREAD_SYSCALL_GP)(t0)
     ld tp, (THREAD_SYSCALL_TP)(t0)
+
+    CALLEE_SAVED_LS(ld, THREAD_SYSCALL_CS, t0)
 
     ld t1, (THREAD_SYSCALL_PC)(t0)
     csrw sepc, t1
@@ -289,26 +309,11 @@ trap_return:
 
     sret
 
-/* Load/Store operation for C ABI callee-saved registers. */
-#define CALLEE_SAVED_LS(INS)    \
-    INS s0,  (0  * 8)(sp);      \
-    INS s1,  (1  * 8)(sp);      \
-    INS s2,  (2  * 8)(sp);      \
-    INS s3,  (3  * 8)(sp);      \
-    INS s4,  (4  * 8)(sp);      \
-    INS s5,  (5  * 8)(sp);      \
-    INS s6,  (6  * 8)(sp);      \
-    INS s7,  (7  * 8)(sp);      \
-    INS s8,  (8  * 8)(sp);      \
-    INS s9,  (9  * 8)(sp);      \
-    INS s10, (10 * 8)(sp);      \
-    INS s11, (11 * 8)(sp);
-
 .globl memcpy_with_trap
 memcpy_with_trap:
     /* (1 unused padding word for C ABI stack alignment.) */
     addi sp, sp, -14 * 8
-    CALLEE_SAVED_LS(sd)
+    CALLEE_SAVED_LS(sd, 0, sp)
     sd ra, (12 * 8)(sp)
 
     /* On exception, we jump to memcpy_with_trap_restore_pc, and sp is set to
@@ -328,7 +333,7 @@ memcpy_with_trap:
 
 .globl memcpy_with_trap_restore_pc
 memcpy_with_trap_restore_pc:
-    CALLEE_SAVED_LS(ld)
+    CALLEE_SAVED_LS(ld, 0, sp)
     ld ra, (12 * 8)(sp)
     addi sp, sp, 14 * 8
     li a0, 0

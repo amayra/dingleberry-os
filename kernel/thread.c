@@ -47,6 +47,8 @@ struct thread {
     // just hesitant to duplicate the sequence for computing gp everywhere).
     void *kernel_gp;    // 7
 
+    size_t syscall_cs[12]; // 8
+
     // End of asm fields.
 
     // For in-kernel thread switching.
@@ -320,8 +322,8 @@ void c_trap(struct asm_regs *ctx)
             void *fault_addr = (void *)(uintptr_t)ctx->tval;
             if (g_filter_kernel_pagefault && ctx->cause != 12) {
                 if (g_filter_kernel_pagefault(ctx, fault_addr)) {
-                    show_crash(ctx);
-                    printf("(filterted)\n");
+                    //show_crash(ctx);
+                    //printf("(filterted)\n");
                     return;
                 }
             }
@@ -374,4 +376,22 @@ void threads_init(void (*boot_handler)(void))
         panic("Could not create idle thread.\n");
     thread_switch_to(t);
     panic("unreachable\n");
+}
+
+// not great
+void thread_fill_syscall_saved_regs(struct thread *t, struct asm_regs *regs)
+{
+    *regs = (struct asm_regs){
+        .regs = {
+            [1] = t->syscall_ra,
+            [2] = t->syscall_sp,
+            [3] = t->syscall_gp,
+            [4] = t->syscall_tp,
+            [8] = t->syscall_cs[0],
+            [9] = t->syscall_cs[1],
+        },
+        .pc = t->syscall_pc,
+    };
+    for (size_t n = 2; n < 12; n++)
+        regs->regs[n - 2 + 18] = t->syscall_cs[n];
 }
