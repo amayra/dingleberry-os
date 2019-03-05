@@ -28,7 +28,7 @@ struct vm_resident {
     // Current set of present resident pages. Unsorted. Requires linear search.
     // Note: this is obviously very inefficient. It has to deal with large
     //       sparse regions, and it should have minimal space overhead per page,
-    //       so this is probably use something complicated, like a tree with
+    //       so this should probably use something complicated, like a tree with
     //       leaf nodes that cover non-sparse regions. Which is why we don't
     //       bother and do something dumb - since in theory it could be fixed
     //       with just a bit of effort.
@@ -66,9 +66,7 @@ struct vm_object {
     const struct vm_object_ops *ops;
     void *ops_ud;
 
-    // Cached RAM pages. Shared mappings of vm_object use this. Private mappings
-    // use a different vm_resident (which may or may not share physical pages
-    // with it).
+    // Cached/dirty RAM pages.
     struct vm_resident *resident;
 };
 
@@ -123,7 +121,6 @@ struct vm_object_ref {
 // Represents a region mapped into a virtual address space. It references some
 // kind of backing storage.
 struct vm_mapping {
-    struct mmu *mmu;
     // Reserved address region for this mapping. Mappings of size 0 are not
     // allowed. The last page of the address space can't be used, but then
     // again it already ends at (MMU_ADDRESS_LOWER_MAX+1).
@@ -415,7 +412,7 @@ static void vm_aspace_dump(struct vm_aspace *as)
 {
     printf("vm_aspace %p:\n", as);
     for (struct vm_mapping *m = as->mappings.head; m; m = m->mappings.next) {
-        char perm[] = "--- -- -";
+        char perm[] = "--- --";
         if (m->flags & KERN_MAP_PERM_R)
             perm[0] = 'R';
         if (m->flags & KERN_MAP_PERM_W)
@@ -426,10 +423,16 @@ static void vm_aspace_dump(struct vm_aspace *as)
             perm[4] = 'C';
         if (m->flags & KERN_MAP_FORK_SHARE)
             perm[5] = 'S';
-        if (m->data.object && m->data.object->resident != m->data.resident)
-            perm[7] = 'P';
-        printf("  %016lx - %016lx %s\n", (long)m->virt_start,
+        printf("  %016lx - %016lx %s ", (long)m->virt_start,
                (long)m->virt_end, perm);
+        if (m->data.object) {
+            printf("%zu", m->data.resident->num_pages);
+            if (m->data.object->resident != m->data.resident)
+                printf("/%zu", m->data.object->resident->num_pages);
+        } else {
+            printf("DEAD");
+        }
+        printf("\n");
     }
 }
 

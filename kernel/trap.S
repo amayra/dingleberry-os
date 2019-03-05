@@ -1,24 +1,5 @@
 #include "memory.h"
-
-/* Offsets/sizes for struct asm_regs. */
-#define ASM_REGS_SIZE   (32 * 8 + 6 * 8)
-#define ASM_REGS_REGS   (0 * 8)
-#define ASM_REGS_PC     (32 * 8 + 0 * 8)
-#define ASM_REGS_STATUS (32 * 8 + 1 * 8)
-#define ASM_REGS_CAUSE  (32 * 8 + 2 * 8)
-#define ASM_REGS_TVAL   (32 * 8 + 3 * 8)
-#define ASM_REGS_IP     (32 * 8 + 4 * 8)
-
-/* Offsets for struct thread. */
-#define THREAD_SCRATCH_SP   (0 * 8)
-#define THREAD_SCRATCH_TP   (1 * 8)
-#define THREAD_SYSCALL_RA   (2 * 8)
-#define THREAD_SYSCALL_SP   (3 * 8)
-#define THREAD_SYSCALL_GP   (4 * 8)
-#define THREAD_SYSCALL_TP   (5 * 8)
-#define THREAD_SYSCALL_PC   (6 * 8)
-#define THREAD_KERNEL_GP    (7 * 8)
-#define THREAD_SYSCALL_CS   (8 * 8)
+#include "asm_offsets.h"
 
 /* Number of entries in syscall_table[]. */
 #define ASM_SYSCALL_COUNT   6
@@ -128,8 +109,10 @@ trap:
     /* Setup kernel stack. */
     mv sp, tp
 
-    /* (Could be computed, but doing so in C seems less messy for now.) */
-    ld gp, (THREAD_KERNEL_GP)(tp)
+.option push
+.option norelax
+    lla gp, __global_pointer$
+.option pop
 
     /* Dispatch the syscall. */
     li t0, ASM_SYSCALL_COUNT
@@ -287,8 +270,10 @@ generic_trap:
     csrr a0, sip
     sd a0, (ASM_REGS_IP)(sp)
 
-    /* (Could be computed, but doing so in C seems less messy for now.) */
-    ld gp, (THREAD_KERNEL_GP)(tp)
+.option push
+.option norelax
+    lla gp, __global_pointer$
+.option pop
 
     mv a0, sp
     jal c_trap

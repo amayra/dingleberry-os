@@ -6,6 +6,7 @@
 #include "opensbi.h"
 #include "page_alloc.h"
 #include "thread.h"
+#include "thread_internal.h"
 #include "virtual_memory.h"
 
 #define KERNEL_STACK_MIN (PAGE_SIZE / 2)
@@ -19,62 +20,6 @@ static struct {
 
 // per CPU
 bool (*g_filter_kernel_pagefault)(struct asm_regs *regs, void *memory_addr);
-
-// Represents a kernel or user mode thread. (User mode threads always imply a
-// kernel thread.)
-// The pointer to this struct is saved in the tp register while in kernel
-// mode, and in the sscratch register while in usermode.
-// Directly below this struct, the kernel stack begins (asm relies on this),
-// which is also why the extra alignment is required.
-struct thread {
-    // Note: start of fields that are accessed from asm. Don't change them
-    //       without adjusting the offsets in the asm.
-
-    // Temporary to relieve register pressure in trap path. These registers are
-    // reused by recursive trap handlers and thus valid only while interrupts
-    // are disabled.
-    size_t scratch_sp;  // 0
-    size_t scratch_tp;  // 1
-
-    // Registers saved by syscall trap. (It saves a subset of all registers.)
-    size_t syscall_ra;  // 2
-    size_t syscall_sp;  // 3
-    size_t syscall_gp;  // 4
-    size_t syscall_tp;  // 5
-    size_t syscall_pc;  // 6
-
-    // Loaded by ASM to get the kernel environment (same for all threads; I was
-    // just hesitant to duplicate the sequence for computing gp everywhere).
-    void *kernel_gp;    // 7
-
-    size_t syscall_cs[12]; // 8
-
-    // End of asm fields.
-
-    // For in-kernel thread switching.
-    void *kernel_sp;
-    void *kernel_pc;
-
-    struct vm_aspace *aspace;
-    struct mmu *mmu;
-
-    struct {
-        struct thread *prev, *next;
-    } all_threads;
-
-    struct {
-        struct thread *prev, *next;
-    } mmu_siblings;
-
-    // Start of the thread allocation; implies stack size and total allocation
-    // size; usually points to an unreadable guard page.
-    void *base;
-
-    // Unused. Just checking how much damn space this eats up. We try to get by
-    // with 1 4K page per thread (including kernel stack), so if this gets too
-    // much, move to a separate slab allocation. (Same for V extensions.)
-    struct fp_regs fp_state;
-} __attribute__((aligned(STACK_ALIGNMENT)));
 
 // (For simpler asm.)
 static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
@@ -114,8 +59,6 @@ struct thread *thread_create(struct vm_aspace *aspace, struct asm_regs *init_reg
         .base = base,
     };
 
-    asm("mv %0, gp" : "=r" (t->kernel_gp));
-
     struct asm_regs *ctx = (void *)((char *)t - sizeof(*ctx));
 
     t->kernel_sp = ctx;
@@ -125,7 +68,6 @@ struct thread *thread_create(struct vm_aspace *aspace, struct asm_regs *init_reg
 
     if (is_kernel) {
         ctx->regs[2] = (uintptr_t)t;            // sp
-        ctx->regs[3] = (uintptr_t)t->kernel_gp; // gp
         ctx->regs[4] = (uintptr_t)t;            // tp
         ctx->status = (1 << 8);                 // set SPP (kernel mode)
     }
