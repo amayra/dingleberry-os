@@ -22,8 +22,12 @@ BUILD_DEPS = $(BUILD_OBJECTS:.o=.d) $(BUILD)/kernel.d $(BUILD)/asm_offsets.d
 # Make all sources dependent on generated headers. This is needed so when
 # building the first target that contains the generated header does not fail
 # (as neither the dependency nor the generated header exist at that time).
-# This means _everything_ is rebuilt when anything the generated header depends
-# on is rebuilt.
+# To prevent that _everything_ is rebuilt when anything the generated header
+# depends on changes, order-only dependencies ("|") are used. This means
+# building any targets with that dependency will make sure the pre-generated
+# header is _created_ (even if it's outdated!), so the normal auto-generated
+# dependencies are used instead. Quite hacky, but somehow works out.
+# Also, making this an intermediate target instead of a variable breaks it.
 # Is there a better way?
 PRE = $(BUILD)/asm_offsets.h
 
@@ -32,15 +36,15 @@ all: $(BUILD)/kernel.bin
 clean:
 	rm -rf $(BUILD)
 
-$(BUILD)/%.o: %.c $(PRE)
+$(BUILD)/%.o: %.c | $(PRE)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/%.o: %.S $(PRE)
+$(BUILD)/%.o: %.S | $(PRE)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD)/kernel.ld: kernel.ld.S
+$(BUILD)/kernel.ld: kernel.ld.S | $(PRE)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -E -P -g0 -DIN_LINKERSCRIPT -c -o $@ $<
 
