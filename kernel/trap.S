@@ -1,9 +1,6 @@
 #include "memory.h"
 #include "asm_offsets.h"
 
-/* Number of entries in syscall_table[]. */
-#define ASM_SYSCALL_COUNT   6
-
 /* Load/Store operation for all registers, _except_ sp (x2) and tp (x4). */
 #define ALL_REGS_LS(INS, BASE, BREG)    \
     INS x1,  (BASE +  1 * 8)(BREG);     \
@@ -115,7 +112,7 @@ trap:
 .option pop
 
     /* Dispatch the syscall. */
-    li t0, ASM_SYSCALL_COUNT
+    li t0, SYSCALL_COUNT
     bltu a7, t0, 1f
     li t1, 1
     la t0, syscall_unavailable
@@ -294,34 +291,54 @@ trap_return:
 
     sret
 
-.globl memcpy_with_trap
-memcpy_with_trap:
+.globl thread_switch_asm
+thread_switch_asm:
+    /* (1 unused padding word for C ABI stack alignment.) */
+    addi sp, sp, -14 * 8
+    CALLEE_SAVED_LS(sd, 0, sp)
+    sd ra, (12 * 8)(sp)
+    sd sp, (THREAD_KERNEL_SP)(tp)
+    la t0, 1f
+    sd t0, (THREAD_KERNEL_PC)(tp)
+    mv tp, a0
+    ld sp, (THREAD_KERNEL_SP)(tp)
+    ld a0, (THREAD_KERNEL_PC)(tp)
+    csrw sscratch, tp
+    /* Typically jumps to 1f, but not always. */
+    jr a0
+1:
+    CALLEE_SAVED_LS(ld, 0, sp)
+    ld ra, (12 * 8)(sp)
+    addi sp, sp, 14 * 8
+    ret
+
+.globl run_with_trap_asm
+run_with_trap_asm:
     /* (1 unused padding word for C ABI stack alignment.) */
     addi sp, sp, -14 * 8
     CALLEE_SAVED_LS(sd, 0, sp)
     sd ra, (12 * 8)(sp)
 
-    /* On exception, we jump to memcpy_with_trap_restore_pc, and sp is set to
-     * the value stored here. */
-    sd sp, (0)(a0)
+    /* On exception, we jump to TRAP_PC, and sp will be set to TRAP_SP. */
+    sd sp, (THREAD_TRAP_SP)(tp)
+    la t0, 1f
+    sd t0, (THREAD_TRAP_PC)(tp)
 
+    mv t0, a0
     mv a0, a1
-    mv a1, a2
-    mv a2, a3
-    call memcpy
+    jalr t0
 
     /* (On success we don't need to restore s0-s11; the C ABI preserves them.) */
-    ld ra, (12 * 8)(sp)
-    addi sp, sp, 14 * 8
     li a0, 1
-    ret
-
-.globl memcpy_with_trap_restore_pc
-memcpy_with_trap_restore_pc:
+    j 2f
+1:
     CALLEE_SAVED_LS(ld, 0, sp)
+    li a0, 0
+2:
     ld ra, (12 * 8)(sp)
     addi sp, sp, 14 * 8
-    li a0, 0
+    /* _Always_ reset the handler PC, so future faults don't use it. */
+    sd zero, (THREAD_TRAP_PC)(tp)
     ret
 
 .section ".bss..page_aligned", "w"

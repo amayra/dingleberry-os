@@ -38,6 +38,10 @@
 // Also we invert the level numbers. In this code, level 0 is the root.
 #define MMU_NUM_LEVELS          4
 #define MMU_PTE_BITS            9
+#define MMU_NUM_PTE_ENTRIES     512
+
+// Level for page tables that only contain leaf entries.
+#define MMU_LEAF_LEVEL          (MMU_NUM_LEVELS - 1)
 
 // Bit position of the PTE index in an address for a page table level.
 #define MMU_PTE_BITPOS(level) \
@@ -67,6 +71,22 @@
 // Size of kernel physical address space mapped at boot.
 // This uses a single "terapage" PTE.
 #define BOOT_PHY_MAP_SIZE       MMU_PAGE_SIZE(0)
+
+// Location of the per-process kernel space region. This contains kernel
+// mappings which are per userpsace process address space, despite being in the
+// kernel address space region, and not being readable by userspace. This area
+// is managed specially by mmu.c, and must be aligned on top-level PTE
+// boundaries. mmu_ functions require the userspace mmu handle as parameter,
+// with the MMU_FLAG_PS flag set.
+#define KERNEL_PS_BASE          (KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE)
+#define KERNEL_PS_SIZE          MMU_PAGE_SIZE(0)
+#define KERNEL_PS_END           (KERNEL_PS_BASE + KERNEL_PS_SIZE)
+// (it's all used by the handle table)
+#define HANDLE_TABLE_BASE       KERNEL_PS_BASE
+#define HANDLE_TABLE_SIZE       KERNEL_PS_SIZE
+
+// Misc. kernel virtual memory until end of address space; managed at runtime.
+#define VIRT_ALLOC_BASE         KERNEL_PS_END
 
 // OpenSBI's FW_JUMP_ADDR (for qemu virt platform). When running qemu, we use
 // fw_jump.elf with this address, and load the kernel image to this address.

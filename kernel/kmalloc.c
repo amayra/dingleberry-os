@@ -93,7 +93,7 @@ void *mallocz(size_t size)
 
         size = (size + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
 
-        ptr = page_alloc(size, PAGR_USAGE_KMALLOC);
+        ptr = page_alloc(size, PAGE_USAGE_KMALLOC);
         if (ptr)
             memset(ptr, 0, size);
 

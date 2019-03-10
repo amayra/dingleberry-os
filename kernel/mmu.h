@@ -13,12 +13,17 @@ enum {
     MMU_FLAG_R = (1 << 1),      // allow read access
     MMU_FLAG_W = (1 << 2),      // allow write access
     MMU_FLAG_X = (1 << 3),      // allow execution
-    MMU_FLAG_G = (1 << 5),      // valid in all mappings (kernel pages)
     MMU_FLAG_A = (1 << 6),      // page accessed bit
     MMU_FLAG_D = (1 << 7),      // page dirty bit
 
     // Non-RISC-V flags
     MMU_FLAG_RMAP = (1 << 12),  // make mapping revokable
+    MMU_FLAG_PS   = (1 << 13),  // see KERNEL_PS_BASE; addresses must fall into
+                                // this region
+    MMU_FLAG_NEW  = (1 << 14),  // do not allow overwriting existing entries
+
+    // Covnenience
+    MMU_FLAG_RW   = MMU_FLAG_R | MMU_FLAG_W,
 };
 
 // Low-level CPU virtual memory mapping for a process or the kernel.
@@ -26,6 +31,7 @@ struct mmu;
 
 void mmu_init(void);
 struct mmu *mmu_alloc(void);
+void mmu_free(struct mmu *mmu);
 
 // The intention is to keep a special mmu instance for the kernel half of
 // the virtual address space. The kernel address space is the same for all user
@@ -77,7 +83,8 @@ bool mmu_protect(struct mmu *mmu, void *virt, int remove_flags, int add_flags);
 
 // Reverse of mmu_map(). Unmapped entries are returned as success with *phys_out
 // set to INVALID_PHY_ADDR. Returns failure only if virt is not a valid mapping
-// address (then out_* are set as if it were an unmapped entry).
+// address (then out_* are set as if it were an unmapped entry). *flags may not
+// contain some special flags (such as MMU_FLAG_RMAP).
 bool mmu_read_entry(struct mmu *mmu, void *virt, uint64_t *phys_out,
                     size_t *size_out, int *flags_out);
 
@@ -89,8 +96,8 @@ void mmu_rmap_mark_ro(uint64_t phys);
 // Similar to mmu_rmap_mark_ro(), but remove the mapping completely, instead of
 // merely changing permission flags.
 // Only the actual owner of the physical page must call this. Otherwise, it may
-// create ownership problems, as higher level data structures are likely not to
-// know about the unmapping.
+// create ownership problems, as higher level data structures are likely not
+// aware about the unmapping.
 void mmu_rmap_unmap(uint64_t phys);
 
 void mmu_switch_to(struct mmu *mmu);
@@ -98,3 +105,13 @@ void mmu_switch_to(struct mmu *mmu);
 // Return true iff addr/size is generally a valid region within userspace. This
 // checks alignment (as allowed by mmu_map()) too.
 bool mmu_is_valid_user_region(void *addr, size_t size);
+
+// Assert that the passed mmu is currently set active on this CPU.
+#ifndef NDEBUG
+#define MMU_ASSERT_CURRENT(mmu) \
+    mmu_assert_current((mmu), __FILE__, __LINE__, false)
+#else
+#define MMU_ASSERT_CURRENT(mmu) do{}while(0)
+#endif
+
+void mmu_assert_current(struct mmu *mmu, const char *file, int line, bool inv);

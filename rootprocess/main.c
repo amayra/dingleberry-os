@@ -104,7 +104,7 @@ static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
         : "a5", "a6",
           "t0", "t1", "t2", "t3", "t4", "t5", "t6",
           "memory");
-    return a0;
+    return (void *)a0;
 }
 
 void thread_cr(int num)
@@ -144,6 +144,21 @@ int syscall_fork(void)
 {
     register uintptr_t a0 asm("a0") = 0;
     register uintptr_t a7 asm("a7") = SYS_FORK;
+    asm volatile("ecall"
+        : "=r" (a0),                                // clobber a0
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a7)
+        : "a1", "a2", "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+    return a0;
+}
+
+int syscall_close(int64_t handle)
+{
+    register uintptr_t a0 asm("a0") = handle;
+    register uintptr_t a7 asm("a7") = SYS_CLOSE;
     asm volatile("ecall"
         : "=r" (a0),                                // clobber a0
           "=r" (a7)                                 // clobber a7
@@ -207,7 +222,7 @@ int main(void)
     volatile int counter = t * 40 + 10; // force on stack
 
     printf("after: %d\n", dataseg);
-    if (t == 1)
+    if (t >= 1)
         dataseg = counter;
     asm volatile("");
     printf("after overwrite: %d\n", dataseg);
@@ -215,6 +230,9 @@ int main(void)
     while (1) {
         asm volatile("wfi");
         printf("wfi wakeup (thread1) fork=%d cnt=%d\n", t, counter++);
+        if (counter == 53 && t >= 1) {
+            printf("close forked thread: %d\n", syscall_close(t));
+        }
     }
     return 0;
 }

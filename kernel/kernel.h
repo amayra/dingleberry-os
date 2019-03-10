@@ -27,3 +27,14 @@ uint64_t read_timer_ticks(void);
     printf(__VA_ARGS__);                                                    \
     abort();                                                                \
 } while (0)
+
+// Exclude pointer types.
+#define REQUIRE_ZERO(x) sizeof(int[(x) ? -1 : 1])
+#define REQUIRE_SAME_TYPES(a, b) \
+    REQUIRE_ZERO(__builtin_types_compatible_p(__typeof__(a), __typeof__(b)))
+#define REQUIRE_ARRAY(x) REQUIRE_SAME_TYPES((x), &(x)[0])
+
+#define ARRAY_ELEMS(x) (sizeof(x) / sizeof((x)[0]) + 0 * REQUIRE_ARRAY(x))
+
+/* Number of entries in syscall_table[]. */
+#define SYSCALL_COUNT 7

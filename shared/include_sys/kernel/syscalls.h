@@ -8,6 +8,8 @@ struct sys_thread_regs {
     size_t pc;
 };
 
+#define KERN_HANDLE_INVALID     0
+
 #define SYS_GET_TIMER_FREQ      0
 #define SYS_DEBUG_WRITE_CHAR    1
 #define SYS_DEBUG_STOP          2
@@ -29,6 +31,9 @@ struct sys_thread_regs {
 #define SYS_MMAP                4
 
 #define SYS_FORK                5
+
+// a0: handle
+#define SYS_CLOSE               6
 
 // Access permission bits. If a given combination cannot be provided by the
 // hardware, effective permissions may be increased.

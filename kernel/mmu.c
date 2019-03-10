@@ -1,7 +1,6 @@
 #include "kernel.h"
 #include "linked_list.h"
 #include "mmu.h"
-#include "mmu_internal.h"
 #include "page_alloc.h"
 #include "page_internal.h"
 #include "slob.h"
@@ -10,6 +9,30 @@ enum {
     // Following RISC-V
     MMU_FLAG_V = (1 << 0),
     MMU_FLAG_U = (1 << 4),
+    MMU_FLAG_G = (1 << 5),
+
+    // Mask for actual RISC-V flags.
+    MMU_RISCV_FLAGS = (1 << 8) - 1,
+};
+
+struct mmu {
+    bool is_kernel;
+    uint64_t root_pt;
+
+    struct {
+        struct mmu *prev, *next;
+    } all_mmus;
+};
+
+// We need to be able to easily change the permissions of all mappings of a
+// physical page (or revoke all mappings). This forms a singly-linked list for
+// each page (struct phys_page.pte_list) that includes most mappings of a page.
+// Note that this makes changing a single, specific mapping O(n) for n mappings,
+// but we hope n is small.
+struct mmu_pte_link {
+    struct mmu *mmu;            // owner of the mapping
+    void *map_addr;             // virtual address of the mapping PTE
+    struct mmu_pte_link *next;  // singly linked list
 };
 
 // Physical page number.
@@ -21,6 +44,20 @@ enum {
 // Given an aligned physical address, return the address shifted into the
 // position as required by PTEs.
 #define PTE_FROM_PHYS(phys) (PPN_FROM_PHYS(phys) << 10)
+
+// Must be top-level PTE aligned.
+static_assert(KERNEL_PS_BASE % MMU_PAGE_SIZE(0) == 0, "");
+static_assert(KERNEL_PS_SIZE % MMU_PAGE_SIZE(0) == 0, "");
+
+#define PS_PTE0_START MMU_PTE_INDEX(KERNEL_PS_BASE, 0)
+#define PS_PTE0_END   MMU_PTE_INDEX(KERNEL_PS_BASE + KERNEL_PS_SIZE, 0)
+
+static_assert(PS_PTE0_START < PS_PTE0_END, "");
+
+// Whether the top-level PTE is for the global ("kernel") address space and thus
+// need to be synced with kernel_mmu.
+#define IS_KERNEL_PTE0(n) ((n) >= MMU_PTE_INDEX(KERNEL_SPACE_BASE, 0) && \
+                           ((n) < PS_PTE0_START || (n) >= PS_PTE0_END))
 
 static struct slob mmu_slob = SLOB_INITIALIZER(struct mmu);
 static struct slob pte_link_slob = SLOB_INITIALIZER(struct mmu_pte_link);
@@ -36,6 +73,12 @@ static void flush_tlb_all(void)
     asm volatile("sfence.vma zero, zero" : : : "memory");
 }
 
+struct mmu *mmu_get_kernel(void)
+{
+    assert(kernel_mmu);
+    return kernel_mmu;
+}
+
 static void sync_with_kernel_mmu(struct mmu *mmu)
 {
     if (mmu == kernel_mmu)
@@ -44,8 +87,8 @@ static void sync_with_kernel_mmu(struct mmu *mmu)
     uint64_t *kpt = page_phys_to_virt(kernel_mmu->root_pt);
     uint64_t *pt = page_phys_to_virt(mmu->root_pt);
 
-    for (size_t n = 256; n < 512; n++) {
-        if (pt[n] != kpt[n]) {
+    for (size_t n = 0; n < MMU_NUM_PTE_ENTRIES; n++) {
+        if (IS_KERNEL_PTE0(n) && pt[n] != kpt[n]) {
             pt[n] = kpt[n];
             // (Unnecessary if only A/D bits were changed.)
             flush_tlb_all();
@@ -59,46 +102,6 @@ static void sync_all_with_kernel_mmu(void)
 {
     for (struct mmu *a = all_mmus.head; a; a = a->all_mmus.next)
         sync_with_kernel_mmu(a);
-}
-
-struct mmu *mmu_alloc(void)
-{
-    struct mmu *mmu = slob_allocz(&mmu_slob);
-    if (!mmu)
-        return NULL;
-
-    mmu->root_pt = page_alloc_phy(1, PAGE_USAGE_PT);
-    if (mmu->root_pt == INVALID_PHY_ADDR) {
-        slob_free(&mmu_slob, mmu);
-        return NULL;
-    }
-
-    if (kernel_mmu) {
-        sync_with_kernel_mmu(mmu);
-    } else {
-        // Set all entries to unmapped.
-        uint64_t *pt = page_phys_to_virt(mmu->root_pt);
-        memset(pt, 0, PAGE_SIZE);
-    }
-
-    LL_APPEND(&all_mmus, mmu, all_mmus);
-
-    return mmu;
-}
-
-void mmu_init(void)
-{
-    kernel_mmu = mmu_alloc();
-    if (!kernel_mmu)
-        panic("Could not allocate root page table.\n");
-
-    kernel_mmu->is_kernel = true;
-}
-
-struct mmu *mmu_get_kernel(void)
-{
-    assert(kernel_mmu);
-    return kernel_mmu;
 }
 
 // Write a leaf page table entry. Tries to allocate required page tables if they
@@ -171,12 +174,15 @@ static bool write_pt(struct mmu *mmu, uintptr_t virt, uint64_t pte,
 }
 
 // Return raw PTE. Also returns the raw value of disabled PTEs (V flag not set),
-// but only for entries on the last level.
-static uint64_t read_pt(struct mmu *mmu, uintptr_t virt)
+// but only for entries on the wanted level.
+//  level: level to read out PTE; MMU_LEAF_LEVEL for normal mappings
+static uint64_t read_pt(struct mmu *mmu, uintptr_t virt, size_t level)
 {
+    assert(level < MMU_NUM_LEVELS);
+
     uint64_t pt_phy = mmu->root_pt;
 
-    for (size_t n = 0; n < MMU_NUM_LEVELS; n++) {
+    for (size_t n = 0; ; n++) {
         size_t entry = MMU_PTE_INDEX(virt, n);
         uint64_t *pt = page_phys_to_virt(pt_phy);
         assert(pt);
@@ -184,7 +190,7 @@ static uint64_t read_pt(struct mmu *mmu, uintptr_t virt)
         // Next page table entry.
         uint64_t npte = pt[entry];
 
-        if (n == MMU_NUM_LEVELS -  1)
+        if (n == level)
             return npte;
 
         if (!(npte & MMU_FLAG_V))
@@ -212,7 +218,7 @@ static void mmu_unmap(struct mmu *mmu, void *virt)
 
     assert(!(ivirt & (PAGE_SIZE - 1)));
 
-    uint64_t pte = read_pt(mmu, ivirt);
+    uint64_t pte = read_pt(mmu, ivirt, MMU_LEAF_LEVEL);
 
     if (pte & MMU_FLAG_V) {
         uint64_t phys = PTE_GET_PHYS(pte);
@@ -242,10 +248,11 @@ static bool check_api_flags(int flags)
     int ok_flags = MMU_FLAG_R |
                    MMU_FLAG_W |
                    MMU_FLAG_X |
-                   MMU_FLAG_G |
                    MMU_FLAG_A |
                    MMU_FLAG_D |
-                   MMU_FLAG_RMAP;
+                   MMU_FLAG_RMAP |
+                   MMU_FLAG_PS |
+                   MMU_FLAG_NEW;
 
     return (flags & ok_flags) == flags;
 }
@@ -261,28 +268,45 @@ static int fix_flags(int flags)
     return flags;
 }
 
-// Note: may allow superpages at a later point
-static bool check_region(void *addr, size_t size, bool kernel)
+static bool check_region(void *addr, size_t size, bool kernel, int flags)
 {
     uintptr_t ivirt = (uintptr_t)addr;
 
     if ((ivirt & (PAGE_SIZE - 1)) || (size & (PAGE_SIZE - 1)))
         return false; // alignment
 
-    // Must not cross boundaries (including user/kernel split)
-    uint64_t min = kernel ? KERNEL_SPACE_BASE : 0;
-    uint64_t max = kernel ? UINT64_MAX : MMU_ADDRESS_LOWER_MAX;
-    if (ivirt < min)
+    if (!size)
         return false;
-    if (max - ivirt < size - 1)
-        return false;
+
+    if (flags & MMU_FLAG_PS) {
+        // Must lie within PS region.
+        if (kernel)
+            return false;
+        if (ivirt < KERNEL_PS_BASE || ivirt >= KERNEL_PS_END)
+            return false;
+        if (size > KERNEL_PS_SIZE - (ivirt - KERNEL_PS_BASE))
+            return false;
+    } else {
+        // Must not cross boundaries (including user/kernel split)
+        uint64_t min = kernel ? KERNEL_SPACE_BASE : 0;
+        uint64_t max = kernel ? UINT64_MAX : MMU_ADDRESS_LOWER_MAX;
+        if (ivirt < min)
+            return false;
+        if (max - ivirt < size - 1)
+            return false;
+        // And outside of PS region.
+        uintptr_t end = ivirt + (size - 1); // inclusive
+        if ((KERNEL_PS_BASE >= ivirt && KERNEL_PS_BASE <= end) ||
+            (KERNEL_PS_END > ivirt && KERNEL_PS_END - 1 <= end))
+            return false;
+    }
 
     return true;
 }
 
 bool mmu_is_valid_user_region(void *addr, size_t size)
 {
-    return check_region(addr, size, false);
+    return check_region(addr, size, false, 0);
 }
 
 static bool validate_vaddr(struct mmu *mmu, uintptr_t ivirt, size_t size,
@@ -291,11 +315,11 @@ static bool validate_vaddr(struct mmu *mmu, uintptr_t ivirt, size_t size,
     if (size != PAGE_SIZE)
         return false; // for now support only leaf pages
 
-    if (!check_region((void *)ivirt, size, mmu->is_kernel))
+    if (!check_region((void *)ivirt, size, mmu->is_kernel, flags))
         return false;
 
     // Global pages make sense for the kernel only. (Special cases, such as L4
-    // style kernel info pages, must be excluded explicitly.)
+    // style kernel info pages (if he had them), must be excluded explicitly.)
     if (!mmu->is_kernel && (flags & MMU_FLAG_G))
         return false;
 
@@ -309,7 +333,14 @@ bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags)
     assert(check_api_flags(flags));
     flags = fix_flags(flags);
 
+    if (mmu->is_kernel)
+        flags |= MMU_FLAG_G;
+
     if (!validate_vaddr(mmu, ivirt, size, flags))
+        return false;
+
+    if ((flags & MMU_FLAG_NEW) &&
+        (read_pt(mmu, ivirt, MMU_LEAF_LEVEL) & MMU_FLAG_V))
         return false;
 
     uint64_t pte = 0;
@@ -327,7 +358,7 @@ bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags)
         if (!write_pt(mmu, ivirt, pte, true))
             return false;
 
-        pte |= flags & ~(uint64_t)MMU_FLAG_RMAP;
+        pte |= flags & MMU_RISCV_FLAGS;
         pte |= MMU_FLAG_V;
         if (ivirt < KERNEL_SPACE_BASE)
             pte |= MMU_FLAG_U;
@@ -375,7 +406,7 @@ bool mmu_protect(struct mmu *mmu, void *virt, int remove_flags, int add_flags)
         return false;
 
     // (if superpages are ever added, we'll need this early to query their size)
-    uint64_t pte = read_pt(mmu, ivirt);
+    uint64_t pte = read_pt(mmu, ivirt, MMU_LEAF_LEVEL);
 
     if (!validate_vaddr(mmu, ivirt, PAGE_SIZE, add_flags))
         return false;
@@ -399,12 +430,16 @@ bool mmu_read_entry(struct mmu *mmu, void *virt, uint64_t *phys_out,
     *flags_out = 0;
 
     uintptr_t ivirt = (uintptr_t)virt;
+    int flags = 0;
 
-    if (!validate_vaddr(mmu, ivirt, PAGE_SIZE, 0))
+    if (ivirt >= KERNEL_PS_BASE && ivirt < KERNEL_PS_END)
+        flags |= MMU_FLAG_PS;
+
+    if (!validate_vaddr(mmu, ivirt, PAGE_SIZE, flags))
         return false;
 
         // (if superpages are ever added, we'll need this early to query their size)
-    uint64_t pte = read_pt(mmu, ivirt);
+    uint64_t pte = read_pt(mmu, ivirt, MMU_LEAF_LEVEL);
 
     if (pte & MMU_FLAG_V) {
         *phys_out = PTE_GET_PHYS(pte);
@@ -451,4 +486,139 @@ void mmu_switch_to(struct mmu *mmu)
     uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(mmu->root_pt);
     asm volatile("csrw satp, %0" : : "r" (satp) : "memory");
     flush_tlb_all();
+}
+
+void mmu_assert_current(struct mmu *mmu, const char *file, int line, bool inv)
+{
+    uint64_t satp_reg;
+    asm volatile("csrr %0, satp" : "=r" (satp_reg));
+    uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(mmu->root_pt);
+    if ((satp != satp_reg) ^ inv) {
+        __assert_fail(inv ? "csr.satp != mmu.satp" : "csr.satp == mmu.satp",
+                      file, line, "?");
+    }
+}
+
+// Returns whether all sub-entries were free'd.
+// (virt is not really needed and is used for debug output only; likewise
+// free_root is only needed for debugging)
+static bool free_pt_sub(struct mmu *mmu, size_t level, uint64_t *pt,
+                        uintptr_t virt, bool free_root)
+{
+    bool all_unused = true;
+
+    for (size_t n = 0; n < MMU_NUM_PTE_ENTRIES; n++) {
+        // Shared kernel page table entries.
+        if (level == 0 && !mmu->is_kernel && IS_KERNEL_PTE0(n))
+            continue;
+
+        uint64_t pte = pt[n];
+        if (pte & MMU_FLAG_V) {
+            uintptr_t virt_e = virt + MMU_PAGE_SIZE(level) * n;
+
+            if (level == MMU_LEAF_LEVEL) {
+                all_unused = false;
+                if (free_root) {
+                    // Stale mapping, so the page table can't be removed. In
+                    // particular, when destroying a mmu struct, all mappings
+                    // managed by it must be removed before destroying it.
+                    panic("Still mapped at virt=%p.\n", (void *)virt_e);
+                }
+            } else {
+                // (unexpected superpage)
+                if (pte & (MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X))
+                    panic("unexpected superpage found");
+
+                uint64_t sub_pt_phys = PTE_GET_PHYS(pte);
+                uint64_t *sub_pt = page_phys_to_virt(sub_pt_phys);
+                assert(sub_pt);
+
+                if (free_pt_sub(mmu, level + 1, sub_pt, virt_e, free_root)) {
+                    pt[n] = 0;
+
+                    // (before we make it invalid)
+                    if (level == 0 && mmu->is_kernel)
+                        sync_all_with_kernel_mmu();
+
+                    printf("free pt %zd:%lx at %p\n",
+                           level, (long)sub_pt_phys, (void *)virt_e);
+                    page_free_phy(sub_pt_phys, 1);
+                } else {
+                    all_unused = false;
+                }
+            }
+        }
+    }
+
+    return all_unused;
+}
+
+// Free all page tables referenced by the address on a given level. virt selects
+// page table entry on the give level, under which all page tables must be
+// recursively freed. virt must be always aligned accordingly.
+// If there are still leaf PTEs with V flags set, this blows up.
+// level==MMU_LEAF_LEVEL operates on the last page table, and only checks
+// whether the entries are deallocated correctly.
+//  p_pte: pointer to the parent PTE (pointing to this page table), or if
+//         level==0, NULL.
+static void free_unused_pts(struct mmu *mmu, bool free_root)
+{
+    void *pt = page_phys_to_virt(mmu->root_pt);
+
+    if (free_pt_sub(mmu, 0, pt, 0, free_root) && free_root) {
+        page_free_phy(mmu->root_pt, 1);
+        mmu->root_pt = INVALID_PHY_ADDR;
+    }
+}
+
+struct mmu *mmu_alloc(void)
+{
+    struct mmu *mmu = slob_allocz(&mmu_slob);
+    if (!mmu)
+        return NULL;
+
+    mmu->root_pt = page_alloc_phy(1, PAGE_USAGE_PT);
+    if (mmu->root_pt == INVALID_PHY_ADDR) {
+        slob_free(&mmu_slob, mmu);
+        return NULL;
+    }
+
+    if (kernel_mmu) {
+        sync_with_kernel_mmu(mmu);
+    } else {
+        // Set all entries to unmapped.
+        uint64_t *pt = page_phys_to_virt(mmu->root_pt);
+        memset(pt, 0, PAGE_SIZE);
+    }
+
+    LL_APPEND(&all_mmus, mmu, all_mmus);
+
+    return mmu;
+}
+
+void mmu_free(struct mmu *mmu)
+{
+    if (!mmu)
+        return;
+
+    assert(mmu != kernel_mmu);
+
+    // Can't free in-use mmu struct.
+    mmu_assert_current(mmu, __FILE__, __LINE__, true);
+
+    free_unused_pts(mmu, true);
+    assert(mmu->root_pt == INVALID_PHY_ADDR);
+
+    LL_REMOVE(&all_mmus, mmu, all_mmus);
+
+    slob_free(&mmu_slob, mmu);
+}
+
+void mmu_init(void)
+{
+    kernel_mmu = mmu_alloc();
+    if (!kernel_mmu)
+        panic("Could not allocate root page table.\n");
+
+    kernel_mmu->is_kernel = true;
 }

@@ -1,38 +1,29 @@
 #include "arch.h"
+#include "handle.h"
 #include "kernel.h"
+#include "mmu.h"
 #include "thread.h"
 #include "virtual_memory.h"
 
 #include <kernel/syscalls.h>
 
-// per CPU
-static void *trap_sp;
+struct memcpy_params {
+    void *dst, *src;
+    size_t size;
+};
 
-bool memcpy_with_trap(void **sp, void *dst, void *src, size_t size);
-void memcpy_with_trap_restore_pc();
-
-static bool filter_copy_user(struct asm_regs *regs, void *memory_addr)
+static void do_copy_user(void *ctx)
 {
-    // Only filter the page fault if the user address
-    if ((uintptr_t)memory_addr <= MMU_ADDRESS_LOWER_MAX && trap_sp) {
-        // Force direct return. This assumes that no code in the copy path
-        // (basically memcpy()) modifies global registers like gp.
-        regs->regs[2] = (uintptr_t)trap_sp;
-        regs->pc = (uintptr_t)memcpy_with_trap_restore_pc;
-        trap_sp = NULL;
-        return true;
-    }
-    return false;
+    struct memcpy_params *p = ctx;
+    memcpy(p->dst, p->src, p->size);
 }
 
 static bool copy_user_(void *dst, void *src, size_t size)
 {
-    assert(!g_filter_kernel_pagefault);
-    g_filter_kernel_pagefault = filter_copy_user;
+    struct memcpy_params p = {dst, src, size};
     asm volatile("csrrs zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
-    bool ok = memcpy_with_trap(&trap_sp, dst, src, size);
+    bool ok = run_trap_pagefaults(0, MMU_ADDRESS_LOWER_MAX, do_copy_user, &p);
     asm volatile("csrrc zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
-    g_filter_kernel_pagefault = NULL;
     return ok;
 }
 
@@ -95,8 +86,10 @@ static void syscall_thread_create(void *regs_arg)
     for (size_t n = 0; n < 32; n++)
         regs.regs[n] = user_regs.regs[n];
     regs.pc = user_regs.pc;
-    struct thread *t = thread_create(as, &regs);
+    struct thread *t = thread_create();
     assert(t);
+    thread_set_user_context(t, &regs);
+    thread_set_aspace(t, as);
     printf("user created thread: %p\n", t);
 }
 
@@ -119,13 +112,35 @@ static int syscall_fork(void)
     struct asm_regs regs;
     thread_fill_syscall_saved_regs(t, &regs);
     regs.regs[10] = 0; // child
-    struct thread *t2 = thread_create(as2, &regs);
+    struct thread *t2 = thread_create();
     if (!t2)
         panic("too cheap for error handling\n");
+    thread_set_user_context(t2, &regs);
+    thread_set_aspace(t2, as2);
     if (!vm_fork(as2, as))
         panic("nope\n");
+    mmu_switch_to(thread_get_mmu(t2));
+    if (!handle_table_create(vm_aspace_get_mmu(as2)))
+        panic("Failed to create user handle table.\n");
+    mmu_switch_to(thread_get_mmu(thread_current()));
     printf("fork thread %p as %p\n", t2, as2);
-    return 1; // parent (no PIDs yet, lol)
+    struct handle h = {
+        .type = HANDLE_TYPE_THREAD,
+        .u = {
+            .thread = t2,
+        },
+    };
+    // parent returns thread handle
+    return handle_add_or_free(&h);
+}
+
+static int syscall_close(int64_t handle)
+{
+    struct handle *h = handle_lookup(handle);
+    if (!h)
+        return -1;
+    handle_free(h);
+    return 0;
 }
 
 // All of the following offsets/sizes are hardcoded in ASM.
@@ -142,5 +157,9 @@ const struct syscall_entry syscall_table[] = {
     [SYS_THREAD_CREATE]         = {0, syscall_thread_create},
     [SYS_MMAP]                  = {1, syscall_mmap},
     [SYS_FORK]                  = {1, syscall_fork},
-    // update ASM_SYSCALL_COUNT if you add or remove an entry
+    [SYS_CLOSE]                 = {1, syscall_close},
+    // Update SYSCALL_COUNT if you add or remove an entry.
+    // Also make sure all entrypoint fields are non-NULL.
 };
+
+static_assert(ARRAY_ELEMS(syscall_table) == SYSCALL_COUNT, "");

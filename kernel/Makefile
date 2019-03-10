@@ -5,7 +5,7 @@ CFLAGS = $(COMMON_CFLAGS) -ffreestanding -mno-save-restore -mcmodel=medany -mexp
 LDFLAGS = -T $(BUILD)/kernel.ld -melf64lriscv
 
 OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o mmu.o trap.o kmalloc.o \
-          syscalls.o thread.o virtual_memory.o \
+          syscalls.o thread.o virtual_memory.o handle.o \
           shared/libinsanity/printf.o \
           $(MUSL)/src/string/memcpy.o \
           $(MUSL)/src/string/memmove.o \
@@ -53,7 +53,7 @@ $(BUILD)/asm_offsets.s: asm_offsets.c
 	$(CC) $(CFLAGS) -c -S -o $@ $<
 
 $(BUILD)/asm_offsets.h: $(BUILD)/asm_offsets.s
-	gawk -F '|' '{if(match($$1,/[ \t]+O></)){ $$0 = $$2"_"$$3" "$$4 ; gsub(/struct /, "") ; $$0 = toupper($$0) ; print "#define "$$0" "$$4}}' < $< > $@
+	gawk -F '|' '{if($$1 ~ /[ \t]+O></){ sub(/struct /, "", $$2); $$2 = toupper($$2) ; print "#define "$$2" "$$3}}' < $< > $@
 
 $(BUILD)/kernel.elf: $(BUILD_OBJECTS) $(BUILD)/kernel.ld
 	$(LD) $(LDFLAGS) -o $@ --start-group $(BUILD_OBJECTS) --end-group

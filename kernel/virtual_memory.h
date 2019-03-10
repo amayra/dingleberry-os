@@ -14,9 +14,17 @@ struct vm_aspace;
 struct vm_object_ref;
 
 struct vm_aspace *vm_aspace_create(void);
+void vm_aspace_free(struct vm_aspace *as);
 
 struct mmu;
 struct mmu *vm_aspace_get_mmu(struct vm_aspace *as);
+
+// For free use by struct thread. This is only part of struct vm_aspace for
+// static memory allocation purposes, and is not accessed by the vm code.
+struct vm_aspace_owners {
+    struct thread *head, *tail;
+};
+struct vm_aspace_owners *vm_aspace_get_owners(struct vm_aspace *as);
 
 // Mirrors classic mmap(). obj remains owned by the caller only.
 //  addr: userspace desired address, or -1 if any

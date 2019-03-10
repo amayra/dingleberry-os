@@ -13,32 +13,37 @@
 // Directly below this struct, the kernel stack begins (asm relies on this),
 // which is also why the extra alignment is required.
 struct thread {
-    // Note: start of fields that are accessed from asm. Don't change them
-    //       without adjusting the offsets in the asm.
-
     // Temporary to relieve register pressure in trap path. These registers are
     // reused by recursive trap handlers and thus valid only while interrupts
-    // are disabled.
+    // are disabled. Use by ASM only.
     size_t scratch_sp;
     size_t scratch_tp;
 
     // Registers saved by syscall trap. (It saves a subset of all registers.)
+    // Saved/restored by asm.
     size_t syscall_ra;
     size_t syscall_sp;
     size_t syscall_gp;
     size_t syscall_tp;
     size_t syscall_pc;
-
     size_t syscall_cs[12];
 
-    // End of asm fields.
-
-    // For in-kernel thread switching.
+    // For in-kernel thread switching (asm).
     void *kernel_sp;
     void *kernel_pc;
 
+    // Trap filtering (primitive exception handling).
+    uintptr_t trap_sp;
+    uintptr_t trap_pc;
+    uintptr_t trap_pagefault_lo;
+    uintptr_t trap_pagefault_hi;
+
     struct vm_aspace *aspace;
     struct mmu *mmu;
+
+    // Number of handles referencing this. It legally can be 0 for a thread
+    // that does not have handles to it yet.
+    size_t refcount;
 
     struct {
         struct thread *prev, *next;
@@ -46,7 +51,7 @@ struct thread {
 
     struct {
         struct thread *prev, *next;
-    } mmu_siblings;
+    } aspace_siblings;
 
     // Start of the thread allocation; implies stack size and total allocation
     // size; usually points to an unreadable guard page.

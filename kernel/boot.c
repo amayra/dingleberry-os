@@ -1,6 +1,7 @@
 #include <endian.h>
 #include <elf.h>
 
+#include "handle.h"
 #include "kernel.h"
 #include "kmalloc.h"
 #include "memory.h"
@@ -24,8 +25,11 @@ extern char _sbss;
 extern char _ebss;
 
 uint64_t timer_frequency;
-void *virt_alloc_cur;
-void *virt_alloc_end;
+
+// Virtual memory area that can be used for arbitrary kernel mappings.
+// Set it to something... arbitrary, hope it doesn't collide.
+void *virt_alloc_cur = (void *)VIRT_ALLOC_BASE;
+void *virt_alloc_end = (void *)-(uintptr_t)(PAGE_SIZE);
 
 static uint64_t initrd_phys_start, initrd_phys_end;
 
@@ -168,6 +172,8 @@ static void fdt_parse(void *fdt)
 
             printf("'%s'\n", path);
             level += 1;
+            if (level >= ARRAY_ELEMS(parents))
+                panic("FDT nesting too deep.\n");
             break;
         }
 
@@ -395,8 +401,6 @@ static void map_kernel(void *addr, size_t size, int flags)
     addr = (void *)((uintptr_t)addr & ~(uintptr_t)(PAGE_SIZE - 1));
     size = (size + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
 
-    flags |= MMU_FLAG_G;
-
     for (size_t n = 0; n < size / PAGE_SIZE; n++) {
         bool r = mmu_map(mmu_get_kernel(), addr, phys, PAGE_SIZE, flags);
         if (!r)
@@ -533,11 +537,6 @@ int boot_entry(uintptr_t fdt_phys)
     page_alloc_debug_dump();
 #endif
 
-    // Virtual memory area that can be used for arbitrary kernel mappings.
-    // Set it to something... arbitrary, hope it doesn't collide.
-    virt_alloc_cur = (void *)(uintptr_t)(KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE);
-    virt_alloc_end = (void *)-(uintptr_t)(PAGE_SIZE);
-
     mmu_init();
 
     // Remap used parts of the virtual address space.
@@ -601,6 +600,10 @@ static void continue_boot(void)
     if (!as)
         panic("Could not allocate user addressspace.\n");
 
+    mmu_switch_to(vm_aspace_get_mmu(as));
+    if (!handle_table_create(vm_aspace_get_mmu(as)))
+        panic("Failed to create user handle table.\n");
+
     uintptr_t entrypoint;
     load_elf(root_elf, root_elf_size, as, &entrypoint);
 
@@ -622,12 +625,16 @@ static void continue_boot(void)
     // cause timer irq in 3 seconds
     sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
 
+    struct thread *ut = thread_create();
+    assert(ut);
+
     struct asm_regs regs = {0};
     regs.status = 1 << 1;
     regs.regs[2] = user_stack + user_stack_size;
     regs.pc = entrypoint;
-    struct thread *ut = thread_create(as,  &regs);
-    assert(ut);
+    thread_set_user_context(ut, &regs);
+
+    thread_set_aspace(ut, as);
 
     printf("user thread: %p\n", ut);
     printf("current thread: %p\n", thread_current());

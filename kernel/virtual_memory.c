@@ -159,6 +159,8 @@ struct vm_aspace {
     struct {
         struct vm_mapping *head, *tail;
     } mappings;
+
+    struct vm_aspace_owners owners;
 };
 
 static void vm_objref_destroy(struct vm_object_ref *ref);
@@ -449,6 +451,26 @@ struct vm_aspace *vm_aspace_create(void)
     }
 
     return as;
+}
+
+void vm_aspace_free(struct vm_aspace *as)
+{
+    if (!as)
+        return;
+
+    while (as->mappings.head) {
+        struct vm_mapping *m = as->mappings.head;
+        bool r = vm_munmap(as, (void *)m->virt_start, m->virt_end - m->virt_start);
+        assert(r); // non-splitting unmap, always must succeed
+    }
+
+    mmu_free(as->mmu);
+    slob_free(&slob_vm_aspace, as);
+}
+
+struct vm_aspace_owners *vm_aspace_get_owners(struct vm_aspace *as)
+{
+    return &as->owners;
 }
 
 struct mmu *vm_aspace_get_mmu(struct vm_aspace *as)
