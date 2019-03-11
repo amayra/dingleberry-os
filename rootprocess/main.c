@@ -219,7 +219,7 @@ int main(void)
     int t = syscall_fork();
     printf("----- fork: %d\n", t);
 
-    volatile int counter = t * 40 + 10; // force on stack
+    volatile int counter = !!t * 40 + 10; // force on stack
 
     printf("after: %d\n", dataseg);
     if (t >= 1)
@@ -229,7 +229,7 @@ int main(void)
 
     while (1) {
         asm volatile("wfi");
-        printf("wfi wakeup (thread1) fork=%d cnt=%d\n", t, counter++);
+        printf("wfi wakeup (thread1) fork=%s cnt=%d\n", t?"parent":"child", counter++);
         if (counter == 53 && t >= 1) {
             printf("close forked thread: %d\n", syscall_close(t));
         }

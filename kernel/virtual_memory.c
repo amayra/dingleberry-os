@@ -453,16 +453,21 @@ struct vm_aspace *vm_aspace_create(void)
     return as;
 }
 
-void vm_aspace_free(struct vm_aspace *as)
+static void force_unmap_all(struct vm_aspace *as)
 {
-    if (!as)
-        return;
-
     while (as->mappings.head) {
         struct vm_mapping *m = as->mappings.head;
         bool r = vm_munmap(as, (void *)m->virt_start, m->virt_end - m->virt_start);
         assert(r); // non-splitting unmap, always must succeed
     }
+}
+
+void vm_aspace_free(struct vm_aspace *as)
+{
+    if (!as)
+        return;
+
+    force_unmap_all(as);
 
     mmu_free(as->mmu);
     slob_free(&slob_vm_aspace, as);
@@ -516,7 +521,7 @@ static void mapping_mmu_unmap_range(struct vm_aspace *as, struct vm_mapping *m,
         return;
 
     for (uintptr_t addr = a; addr < b; addr += PAGE_SIZE) {
-        bool r = mmu_map(as->mmu, (void *)addr, INVALID_PHY_ADDR, PAGE_SIZE, 0);
+        bool r = mmu_unmap(as->mmu, (void *)addr, PAGE_SIZE, 0);
         // unmapping can fail only on broken input, such as inconsistent user-
         // space boundaries or unaligned addresses
         assert(r);
@@ -987,11 +992,7 @@ bool vm_fork(struct vm_aspace *dst, struct vm_aspace *src)
     return true;
 
 fail:
-    while (dst->mappings.head) {
-        struct vm_mapping *m = dst->mappings.head;
-        bool r = vm_munmap(dst, (void *)m->virt_start, m->virt_end - m->virt_start);
-        assert(r); // non-splitting unmap, always must succeed
-    }
+    force_unmap_all(dst);
     return false;
 }
 

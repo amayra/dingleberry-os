@@ -211,11 +211,11 @@ static uint64_t read_pt(struct mmu *mmu, uintptr_t virt, size_t level)
     assert(0);
 }
 
-// Internal; users use mmu_map() to unmap.
-static void mmu_unmap(struct mmu *mmu, void *virt)
+static void mmu_unmap_internal(struct mmu *mmu, void *virt, size_t page_size)
 {
     uintptr_t ivirt = (uintptr_t)virt;
 
+    assert(page_size == 0 || page_size == PAGE_SIZE); // no superpages
     assert(!(ivirt & (PAGE_SIZE - 1)));
 
     uint64_t pte = read_pt(mmu, ivirt, MMU_LEAF_LEVEL);
@@ -326,12 +326,27 @@ static bool validate_vaddr(struct mmu *mmu, uintptr_t ivirt, size_t size,
     return true;
 }
 
+bool mmu_unmap(struct mmu *mmu, void *virt, size_t page_size, int flags)
+{
+    uintptr_t ivirt = (uintptr_t)virt;
+
+    assert(!(flags & ~(unsigned)(MMU_FLAG_PS)));
+
+    if (!validate_vaddr(mmu, ivirt, page_size, flags))
+        return false;
+
+    mmu_unmap_internal(mmu, virt, page_size);
+    return true;
+}
+
 bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags)
 {
     uintptr_t ivirt = (uintptr_t)virt;
 
     assert(check_api_flags(flags));
     flags = fix_flags(flags);
+
+    assert(phys != INVALID_PHY_ADDR);
 
     if (mmu->is_kernel)
         flags |= MMU_FLAG_G;
@@ -343,40 +358,38 @@ bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags)
         (read_pt(mmu, ivirt, MMU_LEAF_LEVEL) & MMU_FLAG_V))
         return false;
 
-    uint64_t pte = 0;
+    if (!(flags & (MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X)))
+        return false; // can't be represented
 
-    // MMU_FLAG_RMAP
+    if (phys & (PAGE_SIZE - 1))
+        return false; // alignment
+
+    // Make sure the actual write_pt() succeeds. This is less of a pain
+    // for later error handling.
+    if (!write_pt(mmu, ivirt, 0, true))
+        return false;
+
+    uint64_t pte = 0;
+    pte |= flags & MMU_RISCV_FLAGS;
+    pte |= MMU_FLAG_V;
+    if (ivirt < KERNEL_SPACE_BASE)
+        pte |= MMU_FLAG_U;
+    pte |= PTE_FROM_PHYS(phys);
+
     struct phys_page *page = NULL;
     struct mmu_pte_link *link = NULL;
-
-    if (phys != INVALID_PHY_ADDR) {
-        if (phys & (PAGE_SIZE - 1))
-            return false; // alignment
-
-        // Make sure the actual write_pt() succeeds. This is less of a pain
-        // for later error handling.
-        if (!write_pt(mmu, ivirt, pte, true))
+    if (flags & MMU_FLAG_RMAP) {
+        page = phys_page_get(phys);
+        if (!page || page->usage != PAGE_USAGE_USER)
             return false;
 
-        pte |= flags & MMU_RISCV_FLAGS;
-        pte |= MMU_FLAG_V;
-        if (ivirt < KERNEL_SPACE_BASE)
-            pte |= MMU_FLAG_U;
-        pte |= PTE_FROM_PHYS(phys);
-
-        if (flags & MMU_FLAG_RMAP) {
-            page = phys_page_get(phys);
-            if (!page || page->usage != PAGE_USAGE_USER)
-                return false;
-
-            link = slob_allocz(&pte_link_slob);
-            if (!link)
-                return false;
-        }
+        link = slob_allocz(&pte_link_slob);
+        if (!link)
+            return false;
     }
 
     // Unmap old entry, if any.
-    mmu_unmap(mmu, virt);
+    mmu_unmap_internal(mmu, virt, 0);
 
     bool r = write_pt(mmu, ivirt, pte, false);
     assert(r); // must have been guaranteed due to page table pre-alloc.
@@ -475,7 +488,7 @@ void mmu_rmap_unmap(uint64_t phys)
             if (!link)
                 break;
             // This also removes the entry.
-            mmu_unmap(link->mmu, link->map_addr);
+            mmu_unmap_internal(link->mmu, link->map_addr, 0);
         }
     }
 }
@@ -518,14 +531,9 @@ static bool free_pt_sub(struct mmu *mmu, size_t level, uint64_t *pt,
 
             if (level == MMU_LEAF_LEVEL) {
                 all_unused = false;
-                if (free_root) {
-                    // Stale mapping, so the page table can't be removed. In
-                    // particular, when destroying a mmu struct, all mappings
-                    // managed by it must be removed before destroying it.
+                if (free_root)
                     panic("Still mapped at virt=%p.\n", (void *)virt_e);
-                }
             } else {
-                // (unexpected superpage)
                 if (pte & (MMU_FLAG_R | MMU_FLAG_W | MMU_FLAG_X))
                     panic("unexpected superpage found");
 

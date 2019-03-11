@@ -76,7 +76,7 @@ static void syscall_debug_stop(void)
     panic("User stop.\n");
 }
 
-static void syscall_thread_create(void *regs_arg)
+static int64_t syscall_thread_create(void *regs_arg)
 {
     struct sys_thread_regs user_regs;
     if (!copy_from_user(&user_regs, regs_arg, sizeof(user_regs)))
@@ -91,6 +91,13 @@ static void syscall_thread_create(void *regs_arg)
     thread_set_user_context(t, &regs);
     thread_set_aspace(t, as);
     printf("user created thread: %p\n", t);
+    struct handle h = {
+        .type = HANDLE_TYPE_THREAD,
+        .u = {
+            .thread = t,
+        },
+    };
+    return handle_add_or_free(&h);
 }
 
 static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
@@ -102,7 +109,7 @@ static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
     return vm_mmap(as, addr, length, flags, NULL, offset);
 }
 
-static int syscall_fork(void)
+static int64_t syscall_fork(void)
 {
     struct thread *t = thread_current();
     struct vm_aspace *as = thread_get_aspace(t);
@@ -154,7 +161,7 @@ const struct syscall_entry syscall_table[] = {
     [SYS_GET_TIMER_FREQ]        = {1, syscall_get_timer_freq},
     [SYS_DEBUG_WRITE_CHAR]      = {0, syscall_debug_write_char},
     [SYS_DEBUG_STOP]            = {0, syscall_debug_stop},
-    [SYS_THREAD_CREATE]         = {0, syscall_thread_create},
+    [SYS_THREAD_CREATE]         = {1, syscall_thread_create},
     [SYS_MMAP]                  = {1, syscall_mmap},
     [SYS_FORK]                  = {1, syscall_fork},
     [SYS_CLOSE]                 = {1, syscall_close},

@@ -77,14 +77,11 @@ struct thread *thread_create(void)
 
     // Allocate memory for each page (except the guard page, which is simply
     // not touched, as all virt_alloc addresses should be initially unmapped).
-    for (size_t n = 0; n < KERNEL_THREAD_VPAGES; n++) {
-        int flags = MMU_FLAG_NEW;
-        if (n >= THREAD_GUARD_PAGES) {
-            pages[n] = page_alloc_phy(1, PAGE_USAGE_THREAD);
-            if (pages[n] == INVALID_PHY_ADDR)
-                goto fail;
-            flags |= MMU_FLAG_RW;
-        }
+    for (size_t n = THREAD_GUARD_PAGES; n < KERNEL_THREAD_VPAGES; n++) {
+        int flags = MMU_FLAG_NEW | MMU_FLAG_RW;
+        pages[n] = page_alloc_phy(1, PAGE_USAGE_THREAD);
+        if (pages[n] == INVALID_PHY_ADDR)
+            goto fail;
         if (!mmu_map(kmmu, base + n * PAGE_SIZE, pages[n], PAGE_SIZE, flags))
             goto fail;
     }
@@ -103,7 +100,8 @@ struct thread *thread_create(void)
 
 fail:
     for (size_t n = 0; n < KERNEL_THREAD_VPAGES; n++) {
-        mmu_map(kmmu, base + n * PAGE_SIZE, INVALID_PHY_ADDR, PAGE_SIZE, 0);
+        bool r = mmu_unmap(kmmu, base + n * PAGE_SIZE, PAGE_SIZE, 0);
+        assert(r);
         page_free_phy(pages[n], 1);
     }
     return NULL;
@@ -136,7 +134,7 @@ void thread_free(struct thread *t)
             panic("Internal error on freeing struct thread.\n");
         assert(page_size == PAGE_SIZE);
         page_free_phy(phys, 1);
-        if (!mmu_map(t->mmu, addr, INVALID_PHY_ADDR, PAGE_SIZE, 0))
+        if (!mmu_unmap(t->mmu, addr, PAGE_SIZE, 0))
             panic("Internal error on freeing struct thread (2).\n");
     }
 

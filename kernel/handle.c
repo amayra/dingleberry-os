@@ -106,7 +106,7 @@ void handle_table_destroy(struct mmu *mmu)
         mmu_read_entry(mmu, vaddr, &phys, &page_size, &flags);
         assert(phys != INVALID_PHY_ADDR);
         page_free_phy(phys, 1);
-        bool r = mmu_map(mmu, vaddr, INVALID_PHY_ADDR, PAGE_SIZE, MMU_FLAG_PS);
+        bool r = mmu_unmap(mmu, vaddr, PAGE_SIZE, MMU_FLAG_PS);
         assert(r);
     }
 }

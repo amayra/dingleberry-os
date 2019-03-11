@@ -54,7 +54,9 @@ struct mmu *mmu_get_kernel(void);
 // somewhere in-between.)
 //
 // If a mapping already exists at a specific position, it will be overwritten.
-// Using phys==INVALID_PHY_ADDR will remove a mapping.
+// If the MMU_FLAG_NEW flag is set, an error is returned instead of overwriting
+// existing mappings.
+//
 // The entire mapping will either succeed, or it does not touch the previous
 // state (as far as user-visible). No partial mappings are possible, i.e. it
 // will never stop in the middle of it.
@@ -65,11 +67,20 @@ struct mmu *mmu_get_kernel(void);
 //
 //  mmu: target
 //  virt: virtual address in the target; must be aligned to PAGE_SIZE
-//  phys: physical memory address; must be aligned to PAGE_SIZE
+//  phys: valid physical memory address; must be aligned to PAGE_SIZE
 //  size: size of the mapping; must be exactly PAGE_SIZE
 //  flags: MMU_FLAG_* flags
 // Returns: success
 bool mmu_map(struct mmu *mmu, void *virt, uint64_t phys, size_t size, int flags);
+
+// Unmap the mapping at the given address, or do nothing if nothing was mapped.
+//  mmu: target
+//  virt: unmap address; must be aligned to page size
+//  page_size: expected page size, or 0 to allow any page size
+//  flags: for MMU_FLAG_PS
+//  returns: true if unmapped or no mapping was present, false on mismatching
+//           page size, unaligned address, out of range address
+bool mmu_unmap(struct mmu *mmu, void *virt, size_t page_size, int flags);
 
 // Change the memory mapping at the given address.
 //  virt: exact/page aligned virtual address of a memory page
