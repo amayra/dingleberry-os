@@ -76,69 +76,104 @@ static void syscall_debug_stop(void)
     panic("User stop.\n");
 }
 
-static int64_t syscall_thread_create(void *regs_arg)
+static struct thread *lookup_thread(int64_t handle)
 {
-    struct sys_thread_regs user_regs;
-    if (!copy_from_user(&user_regs, regs_arg, sizeof(user_regs)))
-        return;
-    struct vm_aspace *as = thread_get_aspace(thread_current());
-    struct asm_regs regs = {0};
-    for (size_t n = 0; n < 32; n++)
-        regs.regs[n] = user_regs.regs[n];
-    regs.pc = user_regs.pc;
-    struct thread *t = thread_create();
-    assert(t);
-    thread_set_user_context(t, &regs);
-    thread_set_aspace(t, as);
-    printf("user created thread: %p\n", t);
+    if (handle == KERN_HANDLE_INVALID)
+        return thread_current();
+    struct handle *h = handle_lookup_type(handle, HANDLE_TYPE_THREAD);
+    return h ? h->u.thread : NULL;
+}
+
+static int64_t syscall_thread_create(int aspace_handle, int new_aspace)
+{
+    struct thread *t = lookup_thread(aspace_handle);
+    if (!t)
+        return -1; // bad handle
+
+    struct thread *new = thread_create();
+    if (!new)
+        return -1; // OOM
+
+    struct vm_aspace *as = thread_get_aspace(t);
+    if (new_aspace) {
+        as = vm_aspace_create();
+        if (!as) {
+            thread_free(new);
+            return -1; // OOM
+        }
+        struct mmu *mmu = vm_aspace_get_mmu(as);
+        mmu_switch_to(mmu);
+        bool ok = handle_table_create(mmu);
+        mmu_switch_to(thread_get_mmu(thread_current()));
+        if (!ok) {
+            vm_aspace_free(as);
+            thread_free(new);
+            return -1; // OOM
+        }
+    }
+
+    thread_set_aspace(new, as);
+
     struct handle h = {
         .type = HANDLE_TYPE_THREAD,
         .u = {
-            .thread = t,
+            .thread = new,
         },
     };
     return handle_add_or_free(&h);
 }
 
-static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
-                          uint64_t offset)
+static int syscall_thread_set_context(int thread_handle, void *regs_arg)
 {
-    struct vm_aspace *as = thread_get_aspace(thread_current());
+    struct thread *t = lookup_thread(thread_handle);
+    if (!t)
+        return -1; // bad handle
+
+    struct sys_thread_regs user_regs;
+    if (!copy_from_user(&user_regs, regs_arg, sizeof(user_regs)))
+        return -1; // bad pointer
+    struct asm_regs regs = {0};
+    for (size_t n = 0; n < 32; n++)
+        regs.regs[n] = user_regs.regs[n];
+    regs.pc = user_regs.pc;
+
+    if (!thread_set_user_context(t, &regs))
+        return -1; // thread context cannot be changed
+
+    return 0;
+}
+
+static void *syscall_mmap(uint64_t dst_handle, void *addr, size_t length,
+                          int flags, int handle, uint64_t offset)
+{
+    struct thread *t = lookup_thread(dst_handle);
+    if (!t)
+        return (void *)-1; // bad handle
+    struct vm_aspace *as = thread_get_aspace(t);
     if (handle >= 0)
         return (void *)-1; // not implemented
     return vm_mmap(as, addr, length, flags, NULL, offset);
 }
 
-static int64_t syscall_fork(void)
+static int64_t syscall_copy_aspace(int64_t src, int64_t dst, int emulate_fork)
 {
-    struct thread *t = thread_current();
-    struct vm_aspace *as = thread_get_aspace(t);
-    struct vm_aspace *as2 = vm_aspace_create();
-    if (!as2)
-        return -1;
-    struct asm_regs regs;
-    thread_fill_syscall_saved_regs(t, &regs);
-    regs.regs[10] = 0; // child
-    struct thread *t2 = thread_create();
-    if (!t2)
-        panic("too cheap for error handling\n");
-    thread_set_user_context(t2, &regs);
-    thread_set_aspace(t2, as2);
-    if (!vm_fork(as2, as))
-        panic("nope\n");
-    mmu_switch_to(thread_get_mmu(t2));
-    if (!handle_table_create(vm_aspace_get_mmu(as2)))
-        panic("Failed to create user handle table.\n");
-    mmu_switch_to(thread_get_mmu(thread_current()));
-    printf("fork thread %p as %p\n", t2, as2);
-    struct handle h = {
-        .type = HANDLE_TYPE_THREAD,
-        .u = {
-            .thread = t2,
-        },
-    };
-    // parent returns thread handle
-    return handle_add_or_free(&h);
+    struct thread *t_src = lookup_thread(src);
+    struct thread *t_dst = lookup_thread(dst);
+    if (!t_src || !t_dst)
+        return -1; // bad handle
+
+    if (!vm_fork(thread_get_aspace(t_dst), thread_get_aspace(t_src)))
+        return -1; // OOM or dst not empty
+
+    if (emulate_fork) {
+        struct asm_regs regs;
+        thread_fill_syscall_saved_regs(t_src, &regs);
+        regs.regs[10] = 1; // a0=1 => child
+        if (!thread_set_user_context(t_dst, &regs))
+            return -1; // thread context cannot be changed
+    }
+
+    return 0;
 }
 
 static int syscall_close(int64_t handle)
@@ -162,11 +197,20 @@ const struct syscall_entry syscall_table[] = {
     [SYS_DEBUG_WRITE_CHAR]      = {0, syscall_debug_write_char},
     [SYS_DEBUG_STOP]            = {0, syscall_debug_stop},
     [SYS_THREAD_CREATE]         = {1, syscall_thread_create},
+    [SYS_THREAD_SET_CONTEXT]    = {1, syscall_thread_set_context},
     [SYS_MMAP]                  = {1, syscall_mmap},
-    [SYS_FORK]                  = {1, syscall_fork},
+    [SYS_COPY_ASPACE]           = {1, syscall_copy_aspace},
     [SYS_CLOSE]                 = {1, syscall_close},
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };
 
 static_assert(ARRAY_ELEMS(syscall_table) == SYSCALL_COUNT, "");
+
+void syscalls_self_check(void)
+{
+    for (size_t n = 0; n < ARRAY_ELEMS(syscall_table); n++) {
+        if (!syscall_table[n].entrypoint)
+            panic("Missing syscall entry %zu.\n", n);
+    }
+}

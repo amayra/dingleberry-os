@@ -35,8 +35,9 @@ void thread_set_kernel_context(struct thread *t, void (*fn)(void *ctx), void *ct
 
 // Setup the thread's context for a kernel/user thread. The next time the thread
 // is scheduled, it will return to userspace with the given set of registers,
-// Also see thread_set_kernel_context() remarks.
-void thread_set_user_context(struct thread *t, struct asm_regs *regs);
+// If the context can't be set (such as being a kernel thread, or stuck in a
+// syscall), this returns false.
+bool thread_set_user_context(struct thread *t, struct asm_regs *regs);
 
 // Free the thread. It is an error to free a thread that is still referenced by
 // handles.

@@ -573,6 +573,8 @@ int boot_entry(uintptr_t fdt_phys)
 
 static void continue_boot(void)
 {
+    syscalls_self_check();
+
     printf("initrd contents:\n");
     size_t initrd_pos = 0;
     void *root_elf = NULL;
@@ -626,11 +628,23 @@ static void continue_boot(void)
     sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
 
     struct thread *ut = thread_create();
-    assert(ut);
+    if (!ut)
+        panic("Failed to create user thread.\n");
+
+    struct handle h = {
+        .type = HANDLE_TYPE_THREAD,
+        .u = {
+            .thread = ut,
+        },
+    };
+    int64_t t_h = handle_add_or_free_on(vm_aspace_get_mmu(as), &h);
+    if (!KERN_IS_HANDLE_VALID(t_h))
+        panic("Failed to create thread handle.\n");
 
     struct asm_regs regs = {0};
     regs.status = 1 << 1;
     regs.regs[2] = user_stack + user_stack_size;
+    regs.regs[10] = t_h;
     regs.pc = entrypoint;
     thread_set_user_context(ut, &regs);
 

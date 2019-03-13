@@ -148,10 +148,14 @@ struct handle *handle_lookup_type(int64_t handle, enum handle_type type)
 
 struct handle *handle_alloc(void)
 {
-    MMU_ASSERT_CURRENT(thread_get_mmu(thread_current()));
+    return handle_alloc_on(thread_get_mmu(thread_current()));
+}
+
+struct handle *handle_alloc_on(struct mmu *mmu)
+{
+    MMU_ASSERT_CURRENT(mmu);
 
     if (!HANDLES_FREE_LIST) {
-        struct mmu *mmu = thread_get_mmu(thread_current());
         if (!allocate_handle_page(mmu, HANDLES_ALLOCATED_SIZE))
             return NULL;
     }
@@ -165,15 +169,23 @@ struct handle *handle_alloc(void)
 
 void handle_free(struct handle *h)
 {
-    MMU_ASSERT_CURRENT(thread_get_mmu(thread_current()));
+    handle_free_on(thread_get_mmu(thread_current()), h);
+}
+
+void handle_free_on(struct mmu *mmu, struct handle *h)
+{
+    MMU_ASSERT_CURRENT(mmu);
 
     assert(h >= &HANDLE_TABLE[0] && h < &HANDLE_TABLE[MAX_HANDLES]);
+    assert(h->type != HANDLE_TYPE_INVALID);
 
     handle_vtable[h->type]->unref(h);
 
     h->type = HANDLE_TYPE_INVALID;
     h->u.invalid.next = HANDLES_FREE_LIST;
     HANDLES_FREE_LIST = h;
+
+    handle_dump_all();
 
     // Note: if there are too many free handles, we should probably compactify
     //       the handle table and free unused pages. Since that is expensive,
@@ -183,12 +195,35 @@ void handle_free(struct handle *h)
 
 int64_t handle_add_or_free(struct handle *val)
 {
+    return handle_add_or_free_on(thread_get_mmu(thread_current()), val);
+}
+
+int64_t handle_add_or_free_on(struct mmu *mmu, struct handle *val)
+{
     if (val->type == HANDLE_TYPE_INVALID)
         return KERN_HANDLE_INVALID;
-    struct handle *new = handle_alloc();
+    struct handle *new = handle_alloc_on(mmu);
     if (!new || !handle_vtable[val->type]->ref(new, val)) {
         handle_vtable[val->type]->unref(val);
         return KERN_HANDLE_INVALID;
     }
+    handle_dump_all();
     return handle_get_id(new);
+}
+
+void handle_dump_all(void)
+{
+    if (read_handle_type(&HANDLE_TABLE[0]) < 0) {
+        printf("No handle table mapped.\n");
+        return;
+    }
+
+    size_t num = HANDLES_ALLOCATED_SIZE / sizeof(struct handle);
+    for (size_t n = 0; n < num; n++) {
+        struct handle *h = &HANDLE_TABLE[n];
+
+        if (h->type)
+            printf("%zu: %s\n", n, handle_vtable[h->type]->name);
+    }
+    printf("Space for %zu handles allocated.\n", num);
 }

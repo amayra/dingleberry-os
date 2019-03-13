@@ -73,9 +73,19 @@ void handle_free(struct handle *h);
 // This returns an ID as used in userspace.
 int64_t handle_add_or_free(struct handle *val);
 
+// Pass explicit mmu pointer, which enables you to allocate a handle in a
+// specific address space by temporary switching (instead of needing to change
+// the current thread).
+struct handle *handle_alloc_on(struct mmu *mmu);
+int64_t handle_add_or_free_on(struct mmu *mmu, struct handle *val);
+void handle_free_on(struct mmu *mmu, struct handle *h);
+
+void handle_dump_all(void);
+
 struct handle_vtable {
     bool (*ref)(struct handle *new, struct handle *old);
     void (*unref)(struct handle *h);
+    const char *name;
 };
 
 extern const struct handle_vtable handle_thread;

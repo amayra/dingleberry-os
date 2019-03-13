@@ -90,6 +90,7 @@ struct thread *thread_create(void)
     *t = (struct thread){
         .mmu = kmmu,
         .base = base,
+        .user_context = ((struct asm_regs *)t) - 1,
     };
 
     LL_APPEND(&all_threads, t, all_threads);
@@ -143,8 +144,10 @@ void thread_free(struct thread *t)
 
 void thread_set_kernel_context(struct thread *t, void (*fn)(void *ctx), void *ctx)
 {
-    struct asm_regs *regs = (void *)((char *)t - sizeof(*regs));
+    assert(t->user_context);
+    struct asm_regs *regs = t->user_context;
 
+    t->user_context = NULL;
     t->kernel_sp = regs;
     t->kernel_pc = trap_return;
 
@@ -161,16 +164,18 @@ void thread_set_kernel_context(struct thread *t, void (*fn)(void *ctx), void *ct
     regs->status |= (2ULL << 32) | 0x80000;
 }
 
-void thread_set_user_context(struct thread *t, struct asm_regs *user_regs)
+bool thread_set_user_context(struct thread *t, struct asm_regs *user_regs)
 {
-    struct asm_regs *regs = (void *)((char *)t - sizeof(*regs));
+    if (!t->user_context)
+        return false;
 
-    t->kernel_sp = regs;
+    t->kernel_sp = t->user_context;
     t->kernel_pc = trap_return;
 
-    *regs = *user_regs;
+    *t->user_context = *user_regs;
+    t->user_context->status = (2ULL << 32) | 0x80000;
 
-    regs->status = (2ULL << 32) | 0x80000;
+    return true;
 }
 
 void thread_set_aspace(struct thread *t, struct vm_aspace *aspace)
@@ -344,6 +349,11 @@ static void show_crash(struct asm_regs *ctx)
 
 void c_trap(struct asm_regs *ctx)
 {
+    struct thread *t = thread_current();
+
+    if (ctx->status & (1 << 8))
+        t->user_context = ctx;
+
     if (ctx->cause == ((1ULL << 63) | 5)) {
         printf("timer IRQ\n");
         thread_reschedule();
@@ -363,7 +373,7 @@ void c_trap(struct asm_regs *ctx)
             {
                 ctx->regs[2] = t->trap_sp;
                 ctx->pc = t->trap_pc;
-                return;
+                goto done;
             }
             if (fault_addr <= MMU_ADDRESS_LOWER_MAX) {
                 int access = 0;
@@ -375,12 +385,15 @@ void c_trap(struct asm_regs *ctx)
                 }
                 struct vm_aspace *as = thread_get_aspace(thread_current());
                 if (as && vm_aspace_handle_page_fault(as, (void *)fault_addr, access))
-                    return;
+                    goto done;
             }
         }
         show_crash(ctx);
         panic("stop.\n");
     }
+
+done:
+    t->user_context = NULL;
 }
 
 bool run_trap_pagefaults(uintptr_t ok_lo, uintptr_t ok_hi, void (*fn)(void *),
@@ -479,6 +492,7 @@ static void thread_handle_unref(struct handle *h)
 }
 
 const struct handle_vtable handle_thread = {
+    .name = "thread",
     .ref = thread_handle_ref,
     .unref = thread_handle_unref,
 };

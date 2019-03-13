@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,8 @@
 #include <kernel/syscalls.h>
 
 #include <libinsanity/printf.h>
+
+static int64_t g_self_handle;
 
 int foo[4097];
 int foo2[4097]={1};
@@ -79,14 +82,15 @@ static void other_thread(int num)
     }
 }
 
-static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
-                          uint64_t offset)
+static void *syscall_mmap(uint64_t dst_handle, void *addr, size_t length,
+                          int flags, int handle, uint64_t offset)
 {
-    register uintptr_t a0 asm("a0") = (uintptr_t)addr;
-    register uintptr_t a1 asm("a1") = length;
-    register uintptr_t a2 asm("a2") = flags;
-    register uintptr_t a3 asm("a3") = handle;
-    register uintptr_t a4 asm("a4") = offset;
+    register uintptr_t a0 asm("a0") = dst_handle;
+    register uintptr_t a1 asm("a1") = (uintptr_t)addr;
+    register uintptr_t a2 asm("a2") = length;
+    register uintptr_t a3 asm("a3") = flags;
+    register uintptr_t a4 asm("a4") = handle;
+    register uintptr_t a5 asm("a5") = offset;
     register uintptr_t a7 asm("a7") = SYS_MMAP;
     asm volatile("ecall"
         : "=r" (a0),                                // return value
@@ -94,23 +98,61 @@ static void *syscall_mmap(void *addr, size_t length, int flags, int handle,
           "=r" (a2),                                // clobber a2
           "=r" (a3),                                // clobber a3
           "=r" (a4),                                // clobber a4
+          "=r" (a5),                                // clobber a5
           "=r" (a7)                                 // clobber a7
         : "r" (a0),
           "r" (a1),
           "r" (a2),
           "r" (a3),
           "r" (a4),
+          "r" (a5),
           "r" (a7)
-        : "a5", "a6",
+        : "a6",
           "t0", "t1", "t2", "t3", "t4", "t5", "t6",
           "memory");
     return (void *)a0;
 }
 
+int64_t syscall_thread_create(int64_t aspace_handle, bool new_aspace)
+{
+    register uintptr_t a0 asm("a0") = aspace_handle;
+    register uintptr_t a1 asm("a1") = new_aspace;
+    register uintptr_t a7 asm("a7") = SYS_THREAD_CREATE;
+    asm volatile("ecall"
+        : "=r" (a0),                                // clobber a0
+          "=r" (a1),                                // clobber a1
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a1),
+          "r" (a7)
+        : "a2", "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+    return a0;
+}
+
+int syscall_thread_set_context(int64_t thread_handle, struct sys_thread_regs *regs)
+{
+    register uintptr_t a0 asm("a0") = thread_handle;
+    register uintptr_t a1 asm("a1") = (uintptr_t)regs;
+    register uintptr_t a7 asm("a7") = SYS_THREAD_SET_CONTEXT;
+    asm volatile("ecall"
+        : "=r" (a0),                                // clobber a0
+          "=r" (a1),                                // clobber a1
+          "=r" (a7)                                 // clobber a7
+        : "r" (a0),
+          "r" (a1),
+          "r" (a7)
+        : "a2", "a3", "a4", "a5", "a6",
+          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+          "memory");
+    return a0;
+}
+
 void thread_cr(int num)
 {
     size_t stack_size = 4096 * 4;
-    void *stack = syscall_mmap((void *)-1, stack_size,
+    void *stack = syscall_mmap(KERN_HANDLE_INVALID, (void *)-1, stack_size,
                     KERN_MAP_FORK_COPY | KERN_MAP_PERM_W | KERN_MAP_PERM_R,
                     -1, 0);
     assert(!KERN_MMAP_FAILED(stack));
@@ -122,10 +164,19 @@ void thread_cr(int num)
 
     printf("stack: %p-%p\n", stack, (void *)regs.regs[2]);
 
-    register uintptr_t a0 asm("a0") = (uintptr_t)&regs;
-    register uintptr_t a1 asm("a1") = 0;
-    register uintptr_t a2 asm("a2") = 0;
-    register uintptr_t a7 asm("a7") = SYS_THREAD_CREATE;
+    int64_t h = syscall_thread_create(g_self_handle, false);
+    assert(KERN_IS_HANDLE_VALID(h));
+
+    int r = syscall_thread_set_context(h, &regs);
+    assert(r >= 0);
+}
+
+int syscall_copy_aspace(int64_t src, int64_t dst, bool emulate_fork)
+{
+    register uintptr_t a0 asm("a0") = src;
+    register uintptr_t a1 asm("a1") = dst;
+    register uintptr_t a2 asm("a2") = emulate_fork;
+    register uintptr_t a7 asm("a7") = SYS_COPY_ASPACE;
     asm volatile("ecall"
         : "=r" (a0),                                // clobber a0
           "=r" (a1),                                // clobber a1
@@ -136,20 +187,6 @@ void thread_cr(int num)
           "r" (a2),
           "r" (a7)
         : "a3", "a4", "a5", "a6",
-          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-          "memory");
-}
-
-int syscall_fork(void)
-{
-    register uintptr_t a0 asm("a0") = 0;
-    register uintptr_t a7 asm("a7") = SYS_FORK;
-    asm volatile("ecall"
-        : "=r" (a0),                                // clobber a0
-          "=r" (a7)                                 // clobber a7
-        : "r" (a0),
-          "r" (a7)
-        : "a1", "a2", "a3", "a4", "a5", "a6",
           "t0", "t1", "t2", "t3", "t4", "t5", "t6",
           "memory");
     return a0;
@@ -168,26 +205,6 @@ int syscall_close(int64_t handle)
           "t0", "t1", "t2", "t3", "t4", "t5", "t6",
           "memory");
     return a0;
-}
-
-static void bogus(void)
-{
-    register uintptr_t a0 asm("a0") = (uintptr_t)0x1234;
-    register uintptr_t a1 asm("a1") = 0;
-    register uintptr_t a2 asm("a2") = 0;
-    register uintptr_t a7 asm("a7") = SYS_THREAD_CREATE;
-    asm volatile("ecall"
-        : "=r" (a0),                                // clobber a0
-          "=r" (a1),                                // clobber a1
-          "=r" (a2),                                // clobber a2
-          "=r" (a7)                                 // clobber a7
-        : "r" (a0),
-          "r" (a1),
-          "r" (a2),
-          "r" (a7)
-        : "a3", "a4", "a5", "a6",
-          "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-          "memory");
 }
 
 int dataseg = 123;
@@ -209,30 +226,37 @@ int main(void)
 
     //*(volatile int *)0xdeadbeefd00dull=123;
 
-    bogus();
-
     thread_cr(2);
     thread_cr(3);
 
     printf("before: %d\n", dataseg);
 
-    int t = syscall_fork();
-    printf("----- fork: %d\n", t);
+    int64_t hfork = syscall_thread_create(g_self_handle, true);
+    assert(KERN_IS_HANDLE_VALID(hfork));
+    int t = syscall_copy_aspace(g_self_handle, hfork, true);
+    printf("----- fork: %d, %ld\n", t, (long)hfork);
+    assert(t >= 0);
 
-    volatile int counter = !!t * 40 + 10; // force on stack
+    volatile int counter = !t * 40 + 10; // force on stack
 
     printf("after: %d\n", dataseg);
-    if (t >= 1)
+    if (!t)
         dataseg = counter;
     asm volatile("");
     printf("after overwrite: %d\n", dataseg);
 
     while (1) {
         asm volatile("wfi");
-        printf("wfi wakeup (thread1) fork=%s cnt=%d\n", t?"parent":"child", counter++);
-        if (counter == 53 && t >= 1) {
-            printf("close forked thread: %d\n", syscall_close(t));
+        printf("wfi wakeup (thread1) fork=%s cnt=%d\n", t?"child":"parent", counter++);
+        if (counter == 53 && !t) {
+            printf("close forked thread: %d\n", syscall_close(hfork));
         }
     }
     return 0;
+}
+
+// Uses argument registers as setup by the creator, in this case the kernel.
+void crt_init(int64_t self_handle)
+{
+    g_self_handle = self_handle;
 }

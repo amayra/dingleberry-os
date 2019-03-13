@@ -8,32 +8,48 @@ struct sys_thread_regs {
     size_t pc;
 };
 
+// (Often used as magic value to refer to the calling thread.)
 #define KERN_HANDLE_INVALID     0
+
+#define KERN_IS_HANDLE_VALID(h) ((h) > KERN_HANDLE_INVALID)
 
 #define SYS_GET_TIMER_FREQ      0
 #define SYS_DEBUG_WRITE_CHAR    1
 #define SYS_DEBUG_STOP          2
-#define SYS_THREAD_CREATE       3
+
+// a0: handle
+// returns: error code; can fail only on invalid handles
+#define SYS_CLOSE               3
+
+// a0: thread handle for address space (KERN_HANDLE_INVALID: calling thread)
+// a1: if 1, ignore a0 and create a new address space
+//     (rationale: processes maybe won't know their own thread handle? this
+//      won't really work, so it'll be changed again)
+// returns: thread handle; invalid handle on error
+#define SYS_THREAD_CREATE       4
 
 // Parameters:
-//  a0: addr, or -1
+//  a0: thread handle
+//  a1: pointer to sys_thread_regs
+//  returns: error code
+#define SYS_THREAD_SET_CONTEXT  5
+
+// Parameters:
+//  a0: thread handle for address space (KERN_HANDLE_INVALID: calling thread)
+//  a1: addr, or -1
 //      Providing -1 will make the kernel select an arbitrary address (where
 //      it doesn't conflict with other current mappings). Otherwise, the
 //      behavior is with UNIX MAP_FIXED. The value must be page aligned.
-//  a1: length
+//  a2: length
 //      Size of the mapping. Must be page aligned.
-//  a2: flags (KERN_MAP_*)
-//  a3: handle to object, or -1
+//  a3: flags (KERN_MAP_*)
+//  a4: handle to object, or -1
 //      -1 behaves as with UNIX MAP_ANONYMOUS.
-//  a4: offset
+//  a5: offset
 //      Offset into the mapped object. Must be page aligned. Must be 0 for
 //      anonymous mappings.
-#define SYS_MMAP                4
-
-#define SYS_FORK                5
-
-// a0: handle
-#define SYS_CLOSE               6
+//  returns: pointer, invalid pointer on error (see KERN_MMAP_FAILED())
+#define SYS_MMAP                6
 
 // Access permission bits. If a given combination cannot be provided by the
 // hardware, effective permissions may be increased.
@@ -61,3 +77,17 @@ struct sys_thread_regs {
 #define KERN_MAP_FORK_SHARE     (1 << 6)
 
 #define KERN_MMAP_FAILED(ui) ((intptr_t)(ui) < 0)
+
+// Performs a COW copy of all address space mappings. Returns failure if target
+// address space is not empty.
+// Note that a2 is a helper for implementing fork(). Strictly speaking, the
+// parameter is redundant to existing mechanism, and could be implemented
+// entirely in userspace. It's slightly simpler in kernel space though (no need
+// to write asm that references the syscall ABI).
+// Parameters:
+//  a0: source address space (KERN_HANDLE_INVALID: calling thread)
+//  a1: target address space
+//  a2: 0 or 1; if set to 1, then set a1 to a copy of the caller thread register
+//      context; the target thread will pretend to return with 1 as error code
+//  returns: error code (always 0 on success)
+#define SYS_COPY_ASPACE         7

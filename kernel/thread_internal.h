@@ -38,6 +38,9 @@ struct thread {
     uintptr_t trap_pagefault_lo;
     uintptr_t trap_pagefault_hi;
 
+    // Temporary while in IRQ handling code (or after thread creation).
+    struct asm_regs *user_context;
+
     struct vm_aspace *aspace;
     struct mmu *mmu;
 
