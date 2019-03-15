@@ -4,6 +4,7 @@
 #include "page_alloc.h"
 #include "page_internal.h"
 #include "slob.h"
+#include "thread.h"
 
 enum {
     // Following RISC-V
@@ -225,8 +226,16 @@ static void mmu_unmap_internal(struct mmu *mmu, void *virt, size_t page_size)
 
         struct phys_page *page = phys_page_get(phys);
         if (page && page->usage == PAGE_USAGE_USER && page->u.user.pte_list) {
+            // There might be Futex waiters on this virtual/physical memory page.
+            // Don't care much about waking the exact waiter and just get rid of
+            // them all, since this is a pretty obscure situation anyway. It is
+            // required to do so for example to make threads re-enqueue them to
+            // the correct page on COW.
+            futex_wake(page, -1, INT64_MAX);
+
             // This mapping _could_ be part of the list, but not necessarily.
-            // If it's in there, it must be removed.
+            // If it's in there, it must be removed. If it's not in there, it
+            // was not mapped with MMU_FLAG_RMAP.
             struct mmu_pte_link **pe = &page->u.user.pte_list;
             while (*pe) {
                 struct mmu_pte_link *link = *pe;

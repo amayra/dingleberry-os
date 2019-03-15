@@ -5,6 +5,7 @@
 #include "memory.h"
 
 struct vm_aspace;
+struct phys_page;
 
 // The layout of this struct is fully fixed in asm.
 struct asm_regs {
@@ -21,6 +22,21 @@ struct asm_regs {
 struct fp_regs {
     long double regs[32];
     uint32_t fcsr;
+};
+
+// Static priorities.
+enum thread_priority {
+    THREAD_PRIORITY_IDLE,
+    THREAD_PRIORITY_NORMAL,
+    THREAD_PRIORITY_NUM         // not a valid priority
+};
+
+enum thread_state {
+    THREAD_STATE_NO_CONTEXT,    // early init state; can't be scheduled
+    THREAD_STATE_FINE,          // this thread is totally fine and takes it easy
+    THREAD_STATE_RUNNABLE,      // currently waiting to be scheduled
+    THREAD_STATE_WAIT_FUTEX,    // waiting on a futex
+    THREAD_STATE_DEAD,          // fucked up
 };
 
 // Create a kernel/user thread. You need to call thread_set_*_context() to
@@ -61,8 +77,28 @@ struct mmu *thread_get_mmu(struct thread *t);
 // Cooperative context switch.
 void thread_switch_to(struct thread *t);
 
-// Schedule next thread to run.
+// Return the current state.
+enum thread_state thread_get_state(struct thread *t);
+
+// Set new thread state. The caller must ensure the state transition makes
+// sense.
+void thread_set_state(struct thread *t, enum thread_state state);
+
+// Change priority. It might be needed to call thread_reschedule() to make
+// the new priority take effect.
+void thread_set_priority(struct thread *t, enum thread_priority priority);
+
+// Schedule next thread to run. If the current thread is runnable, this is
+// effectively a yield.
 void thread_reschedule(void);
+
+// Wakeup max_wakeups threads queued as futex waiters for this page. offset is
+// the offset within the page, or -1 to affect the entire page.
+void futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups);
+
+// Make the current thread wait for a corresponding futex_wake() event. This
+// only handles sleeping.
+void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time);
 
 // Disable interrupt trap. Returns whether it was enabled before.
 bool ints_disable(void);

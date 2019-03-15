@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <kernel/syscalls.h>
+#include <kernel/api.h>
 
 // Manages a list of virtual memory mappings in a user address space.
 struct vm_aspace;

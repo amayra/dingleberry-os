@@ -5,7 +5,7 @@
 #include "thread.h"
 #include "virtual_memory.h"
 
-#include <kernel/syscalls.h>
+#include <kernel/api.h>
 
 struct memcpy_params {
     void *dst, *src;
@@ -84,7 +84,7 @@ static struct thread *lookup_thread(int64_t handle)
     return h ? h->u.thread : NULL;
 }
 
-static int64_t syscall_thread_create(int aspace_handle, int new_aspace)
+static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
 {
     struct thread *t = lookup_thread(aspace_handle);
     if (!t)
@@ -129,7 +129,7 @@ static int syscall_thread_set_context(int thread_handle, void *regs_arg)
     if (!t)
         return -1; // bad handle
 
-    struct sys_thread_regs user_regs;
+    struct kern_thread_regs user_regs;
     if (!copy_from_user(&user_regs, regs_arg, sizeof(user_regs)))
         return -1; // bad pointer
     struct asm_regs regs = {0};
@@ -193,14 +193,14 @@ struct syscall_entry {
 };
 
 const struct syscall_entry syscall_table[] = {
-    [SYS_GET_TIMER_FREQ]        = {1, syscall_get_timer_freq},
-    [SYS_DEBUG_WRITE_CHAR]      = {0, syscall_debug_write_char},
-    [SYS_DEBUG_STOP]            = {0, syscall_debug_stop},
-    [SYS_THREAD_CREATE]         = {1, syscall_thread_create},
-    [SYS_THREAD_SET_CONTEXT]    = {1, syscall_thread_set_context},
-    [SYS_MMAP]                  = {1, syscall_mmap},
-    [SYS_COPY_ASPACE]           = {1, syscall_copy_aspace},
-    [SYS_CLOSE]                 = {1, syscall_close},
+    [KERN_FN_GET_TIMER_FREQ]        = {1, syscall_get_timer_freq},
+    [KERN_FN_DEBUG_WRITE_CHAR]      = {0, syscall_debug_write_char},
+    [KERN_FN_DEBUG_STOP]            = {0, syscall_debug_stop},
+    [KERN_FN_THREAD_CREATE]         = {1, syscall_thread_create},
+    [KERN_FN_THREAD_SET_CONTEXT]    = {1, syscall_thread_set_context},
+    [KERN_FN_MMAP]                  = {1, syscall_mmap},
+    [KERN_FN_COPY_ASPACE]           = {1, syscall_copy_aspace},
+    [KERN_FN_CLOSE]                 = {1, syscall_close},
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };

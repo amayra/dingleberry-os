@@ -5,6 +5,7 @@
 #include "mmu.h"
 #include "opensbi.h"
 #include "page_alloc.h"
+#include "page_internal.h"
 #include "thread.h"
 #include "thread_internal.h"
 #include "virtual_memory.h"
@@ -25,9 +26,9 @@ void trap_return(void);
 void thread_switch_asm(struct thread *t);
 bool run_with_trap_asm(void *a, void *b);
 
-static struct {
-    struct thread *head, *tail;
-} all_threads;
+static struct thread_list_head all_threads;
+static struct thread_list_head waiting_threads;
+static struct thread_list_head runnable_threads[THREAD_PRIORITY_NUM];
 
 // per CPU
 bool (*g_filter_kernel_pagefault)(struct asm_regs *regs, void *memory_addr);
@@ -91,6 +92,8 @@ struct thread *thread_create(void)
         .mmu = kmmu,
         .base = base,
         .user_context = ((struct asm_regs *)t) - 1,
+        .state = THREAD_STATE_NO_CONTEXT,
+        .priority = THREAD_PRIORITY_NORMAL,
     };
 
     LL_APPEND(&all_threads, t, all_threads);
@@ -114,6 +117,7 @@ void thread_free(struct thread *t)
     assert(thread_current() != t);
 
     thread_set_aspace(t, NULL);
+    thread_set_state(t, THREAD_STATE_DEAD);
 
     uintptr_t iaddr = (uintptr_t)t;
     assert(iaddr >= thread_aspace_base);
@@ -144,7 +148,7 @@ void thread_free(struct thread *t)
 
 void thread_set_kernel_context(struct thread *t, void (*fn)(void *ctx), void *ctx)
 {
-    assert(t->user_context);
+    assert(t->user_context && t->state == THREAD_STATE_NO_CONTEXT);
     struct asm_regs *regs = t->user_context;
 
     t->user_context = NULL;
@@ -162,11 +166,13 @@ void thread_set_kernel_context(struct thread *t, void (*fn)(void *ctx), void *ct
 
     regs->status = (1 << 8);                 // set SPP (kernel mode)
     regs->status |= (2ULL << 32) | 0x80000;
+
+    thread_set_state(t, THREAD_STATE_RUNNABLE);
 }
 
 bool thread_set_user_context(struct thread *t, struct asm_regs *user_regs)
 {
-    if (!t->user_context)
+    if (!t->user_context || t->state != THREAD_STATE_NO_CONTEXT)
         return false;
 
     t->kernel_sp = t->user_context;
@@ -174,6 +180,8 @@ bool thread_set_user_context(struct thread *t, struct asm_regs *user_regs)
 
     *t->user_context = *user_regs;
     t->user_context->status = (2ULL << 32) | 0x80000;
+
+    thread_set_state(t, THREAD_STATE_RUNNABLE);
 
     return true;
 }
@@ -224,14 +232,49 @@ struct thread *thread_current(void)
     return t;
 }
 
+/*
+static void scheduler_rotate(enum thread_priority pri)
+{
+    struct thread *t = runnable_threads[pri].head;
+    if (t) {
+        LL_REMOVE(&runnable_threads[pri], t, runnable[pri]);
+        LL_APPEND(&runnable_threads[pri], t, runnable[pri]);
+    }
+}
+*/
+
 void thread_reschedule(void)
 {
-    struct thread *cur = thread_current();
-    struct thread *next = cur->all_threads.next;
-    if (!next)
-        next = all_threads.head;
+    struct thread *next = NULL;
 
+    for (int n = THREAD_PRIORITY_NUM - 1; n >= 0; n--) {
+        if (runnable_threads[n].head) {
+            next = runnable_threads[n].head;
+            break;
+        }
+    }
+
+    // Normally, we have the idle thread for doing nothing. In particular, the
+    // idle thread will enable IRQs in order not to freeze the shit.
+    if (!next)
+        panic("No thread to schedule.\n");
+
+    struct thread *cur = thread_current();
+    thread_set_state(cur, THREAD_STATE_RUNNABLE);
+    thread_set_state(next, THREAD_STATE_FINE);
     thread_switch_to(next);
+}
+
+static void thread_handle_timeout(struct thread *t)
+{
+    switch (t->state) {
+    case THREAD_STATE_WAIT_FUTEX:
+        thread_set_state(t, THREAD_STATE_RUNNABLE);
+        break;
+    default:
+        // (must have been in a state that waits)
+        abort();
+    }
 }
 
 bool ints_disable(void)
@@ -260,6 +303,8 @@ void ints_enable(void)
 
 void thread_switch_to(struct thread *t)
 {
+    assert(t->state == THREAD_STATE_FINE);
+
     mmu_switch_to(t->mmu);
 
     // Set time slice for thread t. We don't actually know at which places
@@ -269,6 +314,79 @@ void thread_switch_to(struct thread *t)
     sbi_set_timer(read_timer_ticks() + timer_frequency / 4);
 
     thread_switch_asm(t);
+}
+
+enum thread_state thread_get_state(struct thread *t)
+{
+    return t->state;
+}
+
+void thread_set_state(struct thread *t, enum thread_state state)
+{
+    if (t->state == state)
+        return;
+
+    switch (t->state) {
+    case THREAD_STATE_RUNNABLE:
+        LL_REMOVE(&runnable_threads[t->priority], t, runnable);
+        break;
+    case THREAD_STATE_WAIT_FUTEX:
+        LL_REMOVE(&waiting_threads, t, waiting);
+        break;
+    case THREAD_STATE_NO_CONTEXT:
+    case THREAD_STATE_FINE:
+        break;
+    case THREAD_STATE_DEAD: // fallthrough; state can't be left
+    default:
+        abort();
+    }
+
+    t->state = state;
+
+    switch (t->state) {
+    case THREAD_STATE_RUNNABLE:
+        LL_APPEND(&runnable_threads[t->priority], t, runnable);
+        break;
+    case THREAD_STATE_WAIT_FUTEX: {
+        // Inserted in a sorted manner.
+        struct thread *insert_before = NULL; // NULL => insert at end
+        if (t->wait_timeout_time < UINT64_MAX) {
+            // Look for the first entry that has a higher wakeup time. Naive; a
+            // better implementation would probably use a heap or so.
+            for (struct thread *cur = waiting_threads.head; cur;
+                 cur = cur->waiting.next)
+            {
+                if (cur->wait_timeout_time > t->wait_timeout_time) {
+                    insert_before = cur;
+                    break;
+                }
+            }
+        }
+        LL_INSERT_BEFORE(&waiting_threads, insert_before, t, waiting);
+        break;
+    }
+    case THREAD_STATE_FINE:
+    case THREAD_STATE_DEAD:
+        break;
+    case THREAD_STATE_NO_CONTEXT: // fallthrough: state can't be entered
+    default:
+        abort();
+    }
+}
+
+void thread_set_priority(struct thread *t, enum thread_priority priority)
+{
+    if (t->priority == priority)
+        return;
+
+    // Temporarily switch to some other state to update the scheduler queues.
+    enum thread_state tstate = t->state;
+    if (tstate == THREAD_STATE_RUNNABLE)
+        thread_set_state(t, THREAD_STATE_FINE);
+
+    t->priority = priority;
+
+    thread_set_state(t, tstate);
 }
 
 static void show_regs(struct asm_regs *ctx)
@@ -356,6 +474,7 @@ void c_trap(struct asm_regs *ctx)
 
     if (ctx->cause == ((1ULL << 63) | 5)) {
         printf("timer IRQ\n");
+        //thread_handle_timeout
         thread_reschedule();
         static int cnt;
         if (cnt++ == 5)
@@ -409,6 +528,44 @@ bool run_trap_pagefaults(uintptr_t ok_lo, uintptr_t ok_hi, void (*fn)(void *),
     return run_with_trap_asm(fn, fn_ctx);
 }
 
+void futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups)
+{
+    assert(page->usage == PAGE_USAGE_USER);
+    struct thread **p_next = &page->u.user.futex_waiters;
+
+    while (max_wakeups) {
+        struct thread *t = *p_next;
+        if (!t)
+            break;
+
+        assert(t->state == THREAD_STATE_WAIT_FUTEX);
+
+        if (offset < 0 || t->futex_page_offset == offset) {
+            thread_set_state(t, THREAD_STATE_RUNNABLE);
+            max_wakeups--;
+            *p_next = t->futex_next_waiter;
+            t->futex_next_waiter = NULL;
+        } else {
+            p_next = &t->futex_next_waiter;
+        }
+    }
+}
+
+void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
+{
+    struct thread *t = thread_current();
+    assert(page->usage == PAGE_USAGE_USER);
+
+    t->futex_page_offset = offset;
+    t->futex_next_waiter = page->u.user.futex_waiters;
+
+    page->u.user.futex_waiters = t;
+
+    t->wait_timeout_time = timeout_time;
+    thread_set_state(t, THREAD_STATE_WAIT_FUTEX);
+    thread_reschedule();
+}
+
 static void idle_thread(void *ctx)
 {
     void (*boot_handler)(void) = ctx;
@@ -439,6 +596,10 @@ void threads_init(void (*boot_handler)(void))
         panic("Could not create idle thread.\n");
 
     thread_set_kernel_context(t, idle_thread, boot_handler);
+    thread_set_priority(t, THREAD_PRIORITY_IDLE);
+
+    // (because we switch directly to the new thread)
+    thread_set_state(t, THREAD_STATE_FINE);
 
     // Set a dummy tp while we're switching to new thread. This gives the trap
     // handler a chance to catch kernel exceptions until a real thread pointer

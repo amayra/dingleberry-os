@@ -6,6 +6,14 @@
 
 #include "thread.h"
 
+struct thread_list_head {
+    struct thread *head, *tail;
+};
+
+struct thread_list_node {
+    struct thread *prev, *next;
+};
+
 // Represents a kernel or user mode thread. (User mode threads always imply a
 // kernel thread.)
 // The pointer to this struct is saved in the tp register while in kernel
@@ -44,17 +52,34 @@ struct thread {
     struct vm_aspace *aspace;
     struct mmu *mmu;
 
+    enum thread_state state;
+
+    enum thread_priority priority;
+
+    // Absolute kernel time at which the thread should be checked again. This
+    // happens with thread_handle_timeout().
+    // Used in the following states:
+    //  THREAD_STATE_WAIT_FUTEX
+    uint64_t wait_timeout_time;
+
+    //Futex waiting is done by enqueuing the thread to a page struct, so the
+    // full address is implicit. Store an address to reduce redundant wakeups
+    // just because e.g. 2 mutexes share the same page.
+    int futex_page_offset;
+    struct thread *futex_next_waiter;
+
     // Number of handles referencing this. It legally can be 0 for a thread
     // that does not have handles to it yet.
     size_t refcount;
 
-    struct {
-        struct thread *prev, *next;
-    } all_threads;
+    struct thread_list_node all_threads;
+    struct thread_list_node aspace_siblings;
 
-    struct {
-        struct thread *prev, *next;
-    } aspace_siblings;
+    // Threads in THREAD_STATE_RUNNABLE state (list head according to priority).
+    struct thread_list_node runnable;
+
+    // Threads in any wait state. The list is sorted by wait_timeout_time.
+    struct thread_list_node waiting;
 
     // Start of the thread allocation; implies stack size and total allocation
     // size; usually points to an unreadable guard page.

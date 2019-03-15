@@ -5,7 +5,7 @@
 #include "page_alloc.h"
 #include "thread.h"
 
-#include <kernel/syscalls.h>
+#include <kernel/api.h>
 
 // Require that struct handle is evenly divisible by PAGE_SIZE. This makes some
 // things less of a pain due to the virtual address space mapping. It prevents

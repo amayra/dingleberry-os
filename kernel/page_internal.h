@@ -27,6 +27,13 @@ struct phys_page {
             uint32_t vm_refcount;
             // VM_PHYS_PAGE_FLAG_*
             uint32_t vm_flags;
+            // Futex waiters for all addresses that fall within this page. (You
+            // could optimize this for space by stuffing it into pte_list as a
+            // magic entry. You could also just use a global hashtable for all
+            // futexes [along with per-addressspace hashtables if a certain flag
+            // is set, because Linux figured out a global hashtable isn't so
+            // great], but screw that.)
+            struct thread *futex_waiters;
         } user;
     } u;
 };
