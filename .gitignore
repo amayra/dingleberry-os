@@ -1,7 +1,6 @@
 /bin/
 /trash/
-*.o
-*.d
 /kernel/build/
 /rootprocess/build/
 /initrd.tar
+/scratch.txt
