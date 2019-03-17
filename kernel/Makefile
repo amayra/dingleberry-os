@@ -6,7 +6,7 @@ LDFLAGS = -T $(BUILD)/kernel.ld -melf64lriscv
 
 OBJECTS = start.o boot.o libc_glue.o page_alloc.o slob.o mmu.o trap.o kmalloc.o \
           syscalls.o thread.o virtual_memory.o handle.o time.o \
-          shared/libinsanity/printf.o \
+          root/libinsanity/printf.o \
           $(MUSL)/src/string/memcpy.o \
           $(MUSL)/src/string/memmove.o \
           $(MUSL)/src/string/memset.o \

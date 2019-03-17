@@ -30,9 +30,9 @@ MUSL_CFLAGS = $(CPU_CFLAGS) -std=c99 -nostdinc -ffreestanding $(MUSL_WARN_CFLAGS
               -I$(MUSL)/arch/riscv64 -I$(MUSL)/arch/generic \
               -I$(MUSL)/src/include -I$(MUSL)/src/internal \
               -I$(MUSL)/obj/include -I$(MUSL)/include \
-              -Ishared/include_general
+              -Iroot/include_general
 
-USER_OBJECTS = main.o shared/libinsanity/printf.o
+USER_OBJECTS = main.o root/libinsanity/printf.o
 
 USER_OBJECTS_CFLAGS = $(COMMON_CFLAGS)
 

@@ -21,8 +21,8 @@ CPU_CFLAGS = -mabi=lp64 -march=rv64imafdc -mstrict-align
 COMMON_CFLAGS = -static $(DEP_CFLAGS) $(CPU_CFLAGS) $(WARN_CFLAGS) $(OPT_CFLAGS) \
                 -D_GNU_SOURCE -fno-PIE -fno-builtin-printf \
                 -nostartfiles -nodefaultlibs -nostdlib -nostdinc \
-                -isystem shared/include_sys/ \
-                -isystem shared/musl/include/ \
+                -isystem root/include_sys/ \
+                -isystem root/musl/include/ \
                 -isystem $(GCC_INCLUDE)
 
-MUSL = shared/musl
+MUSL = root/musl
