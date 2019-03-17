@@ -28,15 +28,23 @@ hidden long __syscall_ret(unsigned long), __syscall(syscall_arg_t, ...),
 
 struct pollfd;
 struct timespec;
+struct timeval;
 
 long __emu_SYS_exit_1(long a);
 long __emu_SYS_exit_group_1(long a);
 long __emu_SYS_openat_3(long a, const char *b, long c);
 long __emu_SYS_ppoll_5(struct pollfd *a, long b, struct timespec *c, long d, long e);
 long __emu_SYS_futex_3(volatile void *a, long b, long c);
-long __emu_SYS_futex_4(volatile void *a, long b, long c, long d);
-long __emu_SYS_mmap_6(long a, long b, long c, long d, long e, long f);
+long __emu_SYS_futex_4(volatile void *a, long b, long c, void *d);
+long __emu_SYS_mmap_6(void *a, long b, long c, long d, long e, long f);
+long __emu_SYS_munmap_2(void *a, long b);
+long __emu_SYS_mprotect_3(long a, long b, long c);
 long __emu_SYS_set_tid_address_1(volatile void *a);
+long __emu_SYS_set_robust_list_2(void *a, long b);
+long __emu_SYS_rt_sigprocmask_4(long a, const void *b, void *c, long d);
+long __emu_SYS_nanosleep_2(const struct timespec *a, struct timespec *b);
+long __emu_SYS_clock_gettime_2(long a, struct timespec *b);
+long __emu_SYS_gettimeofday_2(void *a, void *b);
 
 #define __syscall0(n) __emu_ ## n ## _0
 #define __syscall1(n, a1) __emu_ ## n ## _1 (a1)

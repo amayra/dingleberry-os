@@ -162,6 +162,16 @@ static void *syscall_mmap(uint64_t dst_handle, void *addr, size_t length,
     return vm_mmap(as, addr, length, flags, NULL, offset);
 }
 
+static int syscall_mprotect(uint64_t dst_handle, void *addr, size_t length,
+                            unsigned remove_flags, unsigned add_flags)
+{
+    struct thread *t = lookup_thread(dst_handle);
+    if (!t)
+        return -1; // bad handle
+    struct vm_aspace *as = thread_get_aspace(t);
+    return vm_mprotect(as, addr, length, remove_flags, add_flags) ? 0 : -1;
+}
+
 static int64_t syscall_copy_aspace(int64_t src, int64_t dst, int emulate_fork)
 {
     struct thread *t_src = lookup_thread(src);
@@ -228,6 +238,7 @@ static int syscall_futex(int op, uintptr_t timeptr, uintptr_t uaddr, size_t val)
             // (Linux uses a relative time here, we don't.)
             timeout = time_from_timespec(&time);
         }
+        // (this would require an actual atomic OP if we had SMP support)
         int cur;
         if (!copy_from_user(&cur, uaddr, sizeof(cur)))
             return -1; // invalid user address
@@ -237,8 +248,7 @@ static int syscall_futex(int op, uintptr_t timeptr, uintptr_t uaddr, size_t val)
         int offset;
         if (!get_futex_addr(uaddr, &page, &offset))
             return -1; // ???
-        futex_wait(page, offset, timeout);
-        return 0;
+        return futex_wait(page, offset, timeout);
     }
     case KERN_FUTEX_WAKE: {
         // Ensure presence.
@@ -255,6 +265,12 @@ static int syscall_futex(int op, uintptr_t timeptr, uintptr_t uaddr, size_t val)
     }
 }
 
+static int syscall_yield(void)
+{
+    thread_reschedule();
+    return 0;
+}
+
 // All of the following offsets/sizes are hardcoded in ASM.
 
 struct syscall_entry {
@@ -269,9 +285,11 @@ const struct syscall_entry syscall_table[] = {
     [KERN_FN_THREAD_CREATE]         = {1, syscall_thread_create},
     [KERN_FN_THREAD_SET_CONTEXT]    = {1, syscall_thread_set_context},
     [KERN_FN_MMAP]                  = {1, syscall_mmap},
+    [KERN_FN_MPROTECT]              = {1, syscall_mprotect},
     [KERN_FN_COPY_ASPACE]           = {1, syscall_copy_aspace},
     [KERN_FN_CLOSE]                 = {1, syscall_close},
     [KERN_FN_FUTEX]                 = {1, syscall_futex},
+    [KERN_FN_YIELD]                 = {1, syscall_yield},
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };

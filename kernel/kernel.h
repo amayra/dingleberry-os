@@ -33,6 +33,6 @@ extern void *virt_alloc_end;
 #define ARRAY_ELEMS(x) (sizeof(x) / sizeof((x)[0]) + 0 * REQUIRE_ARRAY(x))
 
 /* Number of entries in syscall_table[]. */
-#define SYSCALL_COUNT 9
+#define SYSCALL_COUNT 11
 
 void syscalls_self_check(void);

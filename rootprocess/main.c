@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <time.h>
 
 #include <kernel/api.h>
 #include <kernel/stubs.h>
@@ -21,28 +23,6 @@ static void other_thread(int num)
         asm volatile("wfi");
         printf("wfi wakeup (thread%d)\n", num);
     }
-}
-
-static int kern_get_time(struct kern_timespec *t)
-{
-    return kern_call1(KERN_FN_GET_TIME, (uintptr_t)t);
-}
-
-static void *kern_mmap(uint64_t dst_handle, void *addr, size_t length,
-                          int flags, int handle, uint64_t offset)
-{
-    return (void *)kern_call6(KERN_FN_MMAP, dst_handle, (uintptr_t)addr,
-                              length, flags, handle, offset);
-}
-
-int64_t kern_thread_create(int64_t aspace_handle, bool new_aspace)
-{
-    return kern_call2(KERN_FN_THREAD_CREATE, aspace_handle, new_aspace);
-}
-
-int kern_thread_set_context(int64_t thread_handle, struct kern_thread_regs *regs)
-{
-    return kern_call2(KERN_FN_THREAD_SET_CONTEXT, thread_handle, (uintptr_t)regs);
 }
 
 void thread_cr(int num)
@@ -67,17 +47,31 @@ void thread_cr(int num)
     assert(r >= 0);
 }
 
-int kern_copy_aspace(int64_t src, int64_t dst, bool emulate_fork)
-{
-    return kern_call3(KERN_FN_COPY_ASPACE, src, dst, emulate_fork);
-}
-
-int kern_close(int64_t handle)
-{
-    return kern_call1(KERN_FN_CLOSE, handle);
-}
 
 int dataseg = 123;
+
+pthread_mutex_t testmutex = PTHREAD_MUTEX_INITIALIZER;
+int crown_jewels;
+
+static void *musl_thread(void *a)
+{
+    printf("hello from a musl thread\n");
+    while(1) {
+        printf("lock... from %s\n", __PRETTY_FUNCTION__);
+        pthread_mutex_lock(&testmutex);
+        printf("locked! from %s\n", __PRETTY_FUNCTION__);
+        assert(!crown_jewels);
+        crown_jewels = 1;
+        struct timespec ts = {.tv_sec = 1};
+        nanosleep(&ts, &ts);
+        printf("unlock from %s\n", __PRETTY_FUNCTION__);
+        assert(crown_jewels);
+        crown_jewels = 0;
+        pthread_mutex_unlock(&testmutex);
+        //kern_yield();
+    }
+    return NULL;
+}
 
 int main(void)
 {
@@ -94,12 +88,32 @@ int main(void)
     assert(r >= 0);
     printf("it is now: %ld %ld\n", (long)ts.sec, (long)ts.nsec);
 
+#if 0
     // Dummy futex call to wait a while
     uint32_t dummy = 123;
     ts.sec += 2;
     printf("wait for 2 seconds\n");
     kern_call4(KERN_FN_FUTEX, KERN_FUTEX_WAIT, (uintptr_t)&ts, (uintptr_t)&dummy, 123);
     printf("done\n");
+#endif
+
+    pthread_t res;
+    printf("res: %d\n", pthread_create(&res, NULL, musl_thread, (void *)1234));
+
+    while(1) {
+        printf("lock... from %s\n", __PRETTY_FUNCTION__);
+        pthread_mutex_lock(&testmutex);
+        printf("locked! from %s\n", __PRETTY_FUNCTION__);
+        assert(!crown_jewels);
+        crown_jewels = 1;
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 333 * 1000 * 1000};
+        nanosleep(&ts, &ts);
+        printf("unlock from %s\n", __PRETTY_FUNCTION__);
+        assert(crown_jewels);
+        crown_jewels = 0;
+        pthread_mutex_unlock(&testmutex);
+        //kern_yield();
+    }
 
     thread_cr(2);
     thread_cr(3);

@@ -11,12 +11,12 @@ _Noreturn int __libc_start_main(int (*)(), int, char **,
 #include <elf.h>
 #include <stdint.h>
 
-int64_t g_self_handle;
+int64_t __self_handle;
 
 // Uses argument registers as setup by the creator, in this case the kernel.
 void crt_init(int64_t self_handle)
 {
-    g_self_handle = self_handle;
+    __self_handle = self_handle;
 
     // Build Linux-compatible stack, as expected by musl.
     uintptr_t info[64];
@@ -33,6 +33,8 @@ void crt_init(int64_t self_handle)
     // AUX vector: pointer sized type/value pairs, followed by 0/0
     info[idx++] = AT_EXECFN;
     info[idx++] = (uintptr_t)"/rootprocess";
+    info[idx++] = AT_PAGESZ;
+    info[idx++] = 4096;
     info[idx++] = 0;
     info[idx++] = 0;
 

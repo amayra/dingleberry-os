@@ -672,6 +672,16 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
     return true;
 }
 
+// After changing the mappings in the region from a to b, check whether regions
+// that border on each other could be merged. In particular, this will also
+// check with the regions before a and after b.
+//  a, b: like split_map() return values
+static void merge_map(struct vm_aspace *as, struct vm_mapping *a,
+                      struct vm_mapping *b)
+{
+    // TODO
+}
+
 bool vm_munmap(struct vm_aspace *as, void *addr, size_t length)
 {
     struct vm_mapping *unused1, *unused2;
@@ -800,6 +810,34 @@ fail:
     if (new)
         mapping_destroy_only(new);
     return (void *)-1;
+}
+
+bool vm_mprotect(struct vm_aspace *as, void *addr, size_t length,
+                 unsigned remove_flags, unsigned add_flags)
+{
+    unsigned can_change =
+        PERM_MASK | KERN_MAP_FORK_COPY | KERN_MAP_FORK_SHARE;
+
+    if ((remove_flags & ~can_change) || (add_flags & ~can_change))
+        return false;
+
+    if ((add_flags & KERN_MAP_FORK_COPY) && (add_flags & KERN_MAP_FORK_SHARE))
+        return false;
+
+    struct vm_mapping *a, *b;
+    if (!split_map(as, addr, length, false, false, &a, &b))
+        return false;
+
+    for (struct vm_mapping *cur = a; cur != b; cur = cur->mappings.next) {
+        cur->flags &= ~remove_flags;
+        cur->flags |= add_flags;
+        // Conservatively flush MMU entries.
+        mapping_mmu_unmap_range(as, cur, cur->virt_start, cur->virt_end);
+    }
+
+    merge_map(as, a, b);
+
+    return true;
 }
 
 bool vm_reserve(struct vm_aspace *as, void *addr, size_t length)

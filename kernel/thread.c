@@ -376,7 +376,7 @@ void thread_set_state(struct thread *t, enum thread_state state)
         LL_INSERT_BEFORE(&waiting_threads, insert_before, t, waiting);
         if (waiting_threads.head == t)
             update_timer();
-        printf("wait insert %p\n", t);
+        //printf("wait insert %p\n", t);
         break;
     }
     case THREAD_STATE_FINE:
@@ -519,9 +519,9 @@ void c_trap(struct asm_regs *ctx)
         }
         update_timer();
         thread_reschedule();
-        static int cnt;
+        /*static int cnt;
         if (cnt++ == 5)
-            page_alloc_debug_dump();
+            page_alloc_debug_dump();*/
     } else {
         // The RISC-V spec. doesn't define what most of the exception codes
         // actually mean (lol?). The intention is to catch all page faults that
@@ -589,8 +589,9 @@ uint64_t futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups)
 
         if (offset < 0 || f->offset == offset) {
             struct thread *t = f->t;
-            printf("futex waker %p\n", t);
+            //printf("futex waker %p\n", t);
             *p_next = f->next;
+            f->result = 1;
             t->futex = NULL;
             thread_set_state(t, THREAD_STATE_RUNNABLE);
             max_wakeups--;
@@ -600,10 +601,13 @@ uint64_t futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups)
         }
     }
 
+    if (woken)
+        thread_reschedule();
+
     return woken;
 }
 
-void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
+int futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
 {
     struct thread *t = thread_current();
     assert(page->usage == PAGE_USAGE_USER);
@@ -624,6 +628,8 @@ void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
     thread_reschedule();
 
     assert(!t->futex); // proper wakeup unsets it
+
+    return f.result;
 }
 
 static void idle_thread(void *ctx)

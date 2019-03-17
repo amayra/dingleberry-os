@@ -1,6 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "api.h"
 
@@ -55,3 +57,48 @@ static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
         kern_call7(fn, a0, a1, a2, a3, a4, 0,  0)
 #define kern_call6(fn, a0, a1, a2, a3, a4, a5) \
         kern_call7(fn, a0, a1, a2, a3, a4, a5, 0)
+
+static inline int kern_get_time(struct kern_timespec *t)
+{
+    return kern_call1(KERN_FN_GET_TIME, (uintptr_t)t);
+}
+
+static inline void *kern_mmap(uint64_t dst_handle, void *addr, size_t length,
+                              int flags, int handle, uint64_t offset)
+{
+    return (void *)kern_call6(KERN_FN_MMAP, dst_handle, (uintptr_t)addr,
+                              length, flags, handle, offset);
+}
+
+static int kern_mprotect(uint64_t dst_handle, void *addr, size_t length,
+                         unsigned remove_flags, unsigned add_flags)
+{
+    return kern_call5(KERN_FN_MPROTECT, dst_handle, (uintptr_t)addr, length,
+                      remove_flags, add_flags);
+}
+
+static inline int64_t kern_thread_create(int64_t aspace_handle, bool new_aspace)
+{
+    return kern_call2(KERN_FN_THREAD_CREATE, aspace_handle, new_aspace);
+}
+
+static inline int kern_thread_set_context(int64_t thread_handle,
+                                          struct kern_thread_regs *regs)
+{
+    return kern_call2(KERN_FN_THREAD_SET_CONTEXT, thread_handle, (uintptr_t)regs);
+}
+
+static inline int kern_copy_aspace(int64_t src, int64_t dst, bool emulate_fork)
+{
+    return kern_call3(KERN_FN_COPY_ASPACE, src, dst, emulate_fork);
+}
+
+static inline int kern_close(int64_t handle)
+{
+    return kern_call1(KERN_FN_CLOSE, handle);
+}
+
+static inline void kern_yield(void)
+{
+    kern_call0(KERN_FN_YIELD);
+}

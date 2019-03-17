@@ -5,7 +5,7 @@ OBJCOPY = riscv64-linux-gnu-objcopy
 
 BUILD = build
 
-OPT_CFLAGS = -Os -g -ggdb
+OPT_CFLAGS = -O0 -g -ggdb
 WARN_CFLAGS = -Wall -Werror=format -Werror=implicit-function-declaration
 DEP_CFLAGS = -MD -MP
 

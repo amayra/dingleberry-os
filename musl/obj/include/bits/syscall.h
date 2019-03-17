@@ -375,9 +375,9 @@
 #define SYS_set_tid_address SYS_set_tid_address
 #define SYS_unshare 97
 #define SYS_futex SYS_futex
-#define SYS_set_robust_list 99
+#define SYS_set_robust_list SYS_set_robust_list
 #define SYS_get_robust_list 100
-#define SYS_nanosleep 101
+#define SYS_nanosleep SYS_nanosleep
 #define SYS_getitimer 102
 #define SYS_setitimer 103
 #define SYS_kexec_load 104
@@ -389,7 +389,7 @@
 #define SYS_timer_settime 110
 #define SYS_timer_delete 111
 #define SYS_clock_settime 112
-#define SYS_clock_gettime 113
+#define SYS_clock_gettime SYS_clock_gettime
 #define SYS_clock_getres 114
 #define SYS_clock_nanosleep 115
 #define SYS_syslog 116
@@ -411,7 +411,7 @@
 #define SYS_sigaltstack 132
 #define SYS_rt_sigsuspend 133
 #define SYS_rt_sigaction 134
-#define SYS_rt_sigprocmask 135
+#define SYS_rt_sigprocmask SYS_rt_sigprocmask
 #define SYS_rt_sigpending 136
 #define SYS_rt_sigtimedwait 137
 #define SYS_rt_sigqueueinfo 138
@@ -445,7 +445,7 @@
 #define SYS_umask 166
 #define SYS_prctl 167
 #define SYS_getcpu 168
-#define SYS_gettimeofday 169
+#define SYS_gettimeofday SYS_gettimeofday
 #define SYS_settimeofday 170
 #define SYS_adjtimex 171
 #define SYS_getpid 172
@@ -491,7 +491,7 @@
 #define SYS_recvmsg 212
 #define SYS_readahead 213
 #define SYS_brk 214
-#define SYS_munmap 215
+#define SYS_munmap SYS_munmap
 #define SYS_mremap 216
 #define SYS_add_key 217
 #define SYS_request_key 218

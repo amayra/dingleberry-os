@@ -13,9 +13,28 @@ MUSL_OBJECTS = crt.o crt_c.o musl_emu.o \
                $(MUSL)/src/env/__libc_start_main.o \
                $(MUSL)/src/env/__environ.o \
                $(MUSL)/src/env/__init_tls.o \
+               $(MUSL)/src/errno/__errno_location.o \
                $(MUSL)/src/internal/libc.o \
+               $(MUSL)/src/internal/syscall_ret.o \
+               $(MUSL)/src/mman/mmap.o \
+               $(MUSL)/src/mman/munmap.o \
+               $(MUSL)/src/mman/mprotect.o \
+               $(MUSL)/src/signal/block.o \
+               $(MUSL)/src/stdio/ofl.o \
                $(MUSL)/src/thread/riscv64/__set_thread_area.o \
+               $(MUSL)/src/thread/__lock.o \
+               $(MUSL)/src/thread/__timedwait.o \
+               $(MUSL)/src/thread/__wait.o \
                $(MUSL)/src/thread/default_attr.o \
+               $(MUSL)/src/thread/pthread_create.o \
+               $(MUSL)/src/thread/pthread_mutex_lock.o \
+               $(MUSL)/src/thread/pthread_mutex_timedlock.o \
+               $(MUSL)/src/thread/pthread_mutex_trylock.o \
+               $(MUSL)/src/thread/pthread_mutex_unlock.o \
+               $(MUSL)/src/thread/pthread_setcancelstate.o \
+               $(MUSL)/src/thread/vmlock.o \
+               $(MUSL)/src/time/clock_gettime.o \
+               $(MUSL)/src/time/nanosleep.o \
                $(MUSL)/src/exit/exit.o \
                $(MUSL)/src/exit/_Exit.o \
 

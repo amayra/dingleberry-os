@@ -40,6 +40,10 @@ void *vm_mmap(struct vm_aspace *as, void *addr, size_t length, int flags,
 // or if the call splits regions and not enough memory is available.
 bool vm_munmap(struct vm_aspace *as, void *addr, size_t length);
 
+// Change flags on the given range. Returns success.
+bool vm_mprotect(struct vm_aspace *as, void *addr, size_t length,
+                 unsigned remove_flags, unsigned add_flags);
+
 // Tell vm_aspace that the given page aligned region is reserved, and that it
 // should neither allow other mappings, nor change/access PTEs in it. This is
 // for special kernel mappings.

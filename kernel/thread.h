@@ -98,7 +98,8 @@ uint64_t futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups);
 
 // Make the current thread wait for a corresponding futex_wake() event. This
 // only handles sleeping.
-void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time);
+// Return value: as in KERN_FN_FUTEX.
+int futex_wait(struct phys_page *page, int offset, uint64_t timeout_time);
 
 // Disable interrupt trap. Returns whether it was enabled before.
 bool ints_disable(void);

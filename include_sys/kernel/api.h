@@ -112,7 +112,23 @@ struct kern_timespec {
 //  a1: struct kern_timespec*
 //  a2: uaddr
 //  a3: val
+//  returns:
+//      for WAIT: 1 woken up; 0 timeout; else error code
+//      for WAKE: >= 0 num woken up; else error code
 #define KERN_FN_FUTEX               8
 
 #define KERN_FUTEX_WAIT             1
 #define KERN_FUTEX_WAKE             2
+
+// Change mapping flags, in particular protection flags.
+// Parameters;
+//  a0: thread handle for address space (KERN_HANDLE_INVALID: calling thread)
+//  a1: addr
+//  a2: size
+//  a3: remove flags
+//  a4: add flags
+// Only a subset of flag can be changed. All of KERN_MAP_PERM_* can be changed.
+#define KERN_FN_MPROTECT            9
+
+// Discard the current thread's time slice.
+#define KERN_FN_YIELD               10

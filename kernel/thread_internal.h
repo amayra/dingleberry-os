@@ -15,10 +15,11 @@ struct thread_list_node {
 };
 
 struct futex_waiter {
+    struct futex_waiter *next;
     struct thread *t;
     struct phys_page *page;
     int offset;
-    struct futex_waiter *next;
+    int result;
 };
 
 // Represents a kernel or user mode thread. (User mode threads always imply a
