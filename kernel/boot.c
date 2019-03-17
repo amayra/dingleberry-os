@@ -6,10 +6,11 @@
 #include "kmalloc.h"
 #include "memory.h"
 #include "mmu.h"
-#include "opensbi.h"
 #include "page_alloc.h"
+#include "sbi.h"
 #include "slob.h"
 #include "thread.h"
+#include "time.h"
 #include "virtual_memory.h"
 
 extern char _start;
@@ -24,7 +25,7 @@ extern char _edata;
 extern char _sbss;
 extern char _ebss;
 
-uint64_t timer_frequency;
+static uint64_t timer_frequency;
 
 // Virtual memory area that can be used for arbitrary kernel mappings.
 // Set it to something... arbitrary, hope it doesn't collide.
@@ -34,13 +35,6 @@ void *virt_alloc_end = (void *)-(uintptr_t)(PAGE_SIZE);
 static uint64_t initrd_phys_start, initrd_phys_end;
 
 static void continue_boot(void);
-
-uint64_t read_timer_ticks(void)
-{
-    uint64_t r;
-    asm("rdtime %0" : "=r" (r));
-    return r;
-}
 
 struct fdt_header {
     uint32_t magic;
@@ -359,7 +353,7 @@ static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
 
         // Number of bytes to before the end of the file mapped region (to zero
         // out partial BSS). If 0, clear nothing.
-        size_t clear_size = phdr->p_memsz > phdr->p_filesz ?
+        size_t clear_offs = phdr->p_memsz > phdr->p_filesz ?
                             (offs_end & (PAGE_SIZE - 1)) : 0;
 
         if (file_size) {
@@ -368,7 +362,7 @@ static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
             if (KERN_MMAP_FAILED(a))
                 panic("Could not map ELF file.\n");
 
-            if (clear_size) {
+            if (clear_offs) {
                 uintptr_t clear_addr = vaddr_a + file_size - PAGE_SIZE;
                 uint64_t phys = vm_aspace_get_phys(as, (void *)clear_addr,
                                                    KERN_MAP_PERM_W);
@@ -376,7 +370,7 @@ static void load_elf(void *elf, size_t elf_size, struct vm_aspace *as,
                     panic("Could not touch partial .bss page.\n");
                 a = page_phys_to_virt(phys);
                 assert(a);
-                memset((char *)a + PAGE_SIZE - clear_size, 0, clear_size);
+                memset((char *)a + clear_offs, 0, PAGE_SIZE - clear_offs);
             }
         }
 
@@ -480,6 +474,8 @@ int boot_entry(uintptr_t fdt_phys)
     printf("Timer frequency: %ld Hz\n", (long)timer_frequency);
     if (!timer_frequency)
         panic("Timer frequency not found in FDT.\n");
+
+    time_init(timer_frequency);
 
     page_alloc_mark((uintptr_t)&_start - KERNEL_PHY_BASE, &_end - &_start,
                     PAGE_USAGE_KERNEL);
@@ -624,8 +620,8 @@ static void continue_boot(void)
 
     asm volatile("csrw sie, %0" : : "r"((1 << 9) | (1 << 5) | (1 << 1)));
 
-    // cause timer irq in 3 seconds
-    sbi_set_timer(read_timer_ticks() + timer_frequency * 3);
+    // Make sure timer IRQ fires at least once.
+    time_set_next_event(1);
 
     struct thread *ut = thread_create();
     if (!ut)

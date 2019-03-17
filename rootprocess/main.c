@@ -7,66 +7,12 @@
 #include <kernel/api.h>
 #include <kernel/stubs.h>
 
-#include <libinsanity/printf.h>
-
-static int64_t g_self_handle;
+int64_t g_self_handle;
 
 int foo[4097];
 int foo2[4097]={1};
 const int foo3[4097]={2};
 const int foo4[4097]={3};
-
-struct printf_buf {
-    char *buf;
-    char *dst;
-    char *end;
-};
-
-void debug_printchar(char c)
-{
-    kern_call1(KERN_FN_DEBUG_WRITE_CHAR, c);
-}
-
-static void print_cb(void *ctx)
-{
-    struct printf_buf *buf = ctx;
-    for (char *s = buf->buf; s < buf->dst; s++)
-        debug_printchar(*s);
-    buf->dst = buf->buf;
-}
-
-int printf(const char *__restrict fmt , ...)
-{
-    int ret;
-    va_list va;
-    va_start(va, fmt);
-
-    char buffer[1]; // output each character immediately for now
-    struct printf_buf buf = {
-        .buf = buffer,
-        .dst = buffer,
-        .end = buffer + sizeof(buffer),
-    };
-    ret = lin_bprintf(&buf.dst, &buf.end, print_cb, &buf, fmt, va);
-    print_cb(&buf); // flush
-
-    va_end(va);
-    return ret;
-}
-
-_Noreturn void abort(void)
-{
-    printf("abort() called. Halting.\n");
-    kern_call0(KERN_FN_DEBUG_STOP);
-    while(1);
-}
-
-_Noreturn void __assert_fail(const char *expr, const char *file, int line,
-                             const char *func)
-{
-    printf("Assertion failure: %s:%d:%s: %s\n", file, line, func, expr);
-    abort();
-}
 
 static void other_thread(int num)
 {
@@ -75,6 +21,11 @@ static void other_thread(int num)
         asm volatile("wfi");
         printf("wfi wakeup (thread%d)\n", num);
     }
+}
+
+static int kern_get_time(struct kern_timespec *t)
+{
+    return kern_call1(KERN_FN_GET_TIME, (uintptr_t)t);
 }
 
 static void *kern_mmap(uint64_t dst_handle, void *addr, size_t length,
@@ -133,10 +84,22 @@ int main(void)
     // And this is why we did all this crap.
     printf("Hello world! (From userspace.)\n");
 
-    int freq = kern_call0(KERN_FN_GET_TIMER_FREQ);
-    printf("timer freq: %d\n", freq);
+    //int freq = kern_call0(KERN_FN_GET_TIMER_FREQ);
+    //printf("timer freq: %d\n", freq);
 
     //*(volatile int *)0xdeadbeefd00dull=123;
+
+    struct kern_timespec ts;
+    int r = kern_get_time(&ts);
+    assert(r >= 0);
+    printf("it is now: %ld %ld\n", (long)ts.sec, (long)ts.nsec);
+
+    // Dummy futex call to wait a while
+    uint32_t dummy = 123;
+    ts.sec += 2;
+    printf("wait for 2 seconds\n");
+    kern_call4(KERN_FN_FUTEX, KERN_FUTEX_WAIT, (uintptr_t)&ts, (uintptr_t)&dummy, 123);
+    printf("done\n");
 
     thread_cr(2);
     thread_cr(3);
@@ -167,8 +130,3 @@ int main(void)
     return 0;
 }
 
-// Uses argument registers as setup by the creator, in this case the kernel.
-void crt_init(int64_t self_handle)
-{
-    g_self_handle = self_handle;
-}

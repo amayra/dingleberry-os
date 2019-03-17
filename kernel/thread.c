@@ -3,11 +3,11 @@
 #include "kernel.h"
 #include "linked_list.h"
 #include "mmu.h"
-#include "opensbi.h"
 #include "page_alloc.h"
 #include "page_internal.h"
 #include "thread.h"
 #include "thread_internal.h"
+#include "time.h"
 #include "virtual_memory.h"
 
 // (overflows at sizes towards the end of the integer range)
@@ -30,8 +30,8 @@ static struct thread_list_head all_threads;
 static struct thread_list_head waiting_threads;
 static struct thread_list_head runnable_threads[THREAD_PRIORITY_NUM];
 
-// per CPU
-bool (*g_filter_kernel_pagefault)(struct asm_regs *regs, void *memory_addr);
+// Time at which the next scheduling decision should be made. Per CPU (?).
+static uint64_t time_slice_end_time;
 
 // (For simpler asm.)
 static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
@@ -232,20 +232,15 @@ struct thread *thread_current(void)
     return t;
 }
 
-/*
-static void scheduler_rotate(enum thread_priority pri)
-{
-    struct thread *t = runnable_threads[pri].head;
-    if (t) {
-        LL_REMOVE(&runnable_threads[pri], t, runnable[pri]);
-        LL_APPEND(&runnable_threads[pri], t, runnable[pri]);
-    }
-}
-*/
-
 void thread_reschedule(void)
 {
+    struct thread *cur = thread_current();
     struct thread *next = NULL;
+
+    // Assumes the thread is inserted into a "good" place in the runnable list
+    // (such as at the end to give other threads a chance).
+    if (cur->state == THREAD_STATE_FINE)
+        thread_set_state(cur, THREAD_STATE_RUNNABLE);
 
     for (int n = THREAD_PRIORITY_NUM - 1; n >= 0; n--) {
         if (runnable_threads[n].head) {
@@ -255,12 +250,13 @@ void thread_reschedule(void)
     }
 
     // Normally, we have the idle thread for doing nothing. In particular, the
-    // idle thread will enable IRQs in order not to freeze the shit.
+    // idle thread will enable IRQs in order not to freeze the shit, so it's
+    // important to use it if nothing else is going on.
     if (!next)
         panic("No thread to schedule.\n");
 
-    struct thread *cur = thread_current();
-    thread_set_state(cur, THREAD_STATE_RUNNABLE);
+    assert(next->state == THREAD_STATE_RUNNABLE);
+
     thread_set_state(next, THREAD_STATE_FINE);
     thread_switch_to(next);
 }
@@ -268,9 +264,19 @@ void thread_reschedule(void)
 static void thread_handle_timeout(struct thread *t)
 {
     switch (t->state) {
-    case THREAD_STATE_WAIT_FUTEX:
+    case THREAD_STATE_WAIT_FUTEX: {
+        assert(t->futex);
+        assert(t->futex->page->usage == PAGE_USAGE_USER);
+        printf("futex timeout\n");
+        // Remove from the singly-linked list.
+        struct futex_waiter **p_head = &t->futex->page->u.user.futex_waiters;
+        while (*p_head != t->futex)
+            p_head = &(*p_head)->next;
+        *p_head = t->futex->next;
+        t->futex = NULL;
         thread_set_state(t, THREAD_STATE_RUNNABLE);
         break;
+    }
     default:
         // (must have been in a state that waits)
         abort();
@@ -307,13 +313,18 @@ void thread_switch_to(struct thread *t)
 
     mmu_switch_to(t->mmu);
 
-    // Set time slice for thread t. We don't actually know at which places
-    // we return from userspace (different entrypoints like syscalls, IRQ, and
-    // newly created threads), so do it here.
-    // for now cause timer irq in 1/4 second
-    sbi_set_timer(read_timer_ticks() + timer_frequency / 4);
-
     thread_switch_asm(t);
+}
+
+static void update_timer(void)
+{
+    uint64_t next_time = time_slice_end_time;
+
+    struct thread *t = waiting_threads.head;
+    if (t && t->wait_timeout_time < next_time)
+        next_time = t->wait_timeout_time;
+
+    time_set_next_event(next_time);
 }
 
 enum thread_state thread_get_state(struct thread *t)
@@ -363,6 +374,9 @@ void thread_set_state(struct thread *t, enum thread_state state)
             }
         }
         LL_INSERT_BEFORE(&waiting_threads, insert_before, t, waiting);
+        if (waiting_threads.head == t)
+            update_timer();
+        printf("wait insert %p\n", t);
         break;
     }
     case THREAD_STATE_FINE:
@@ -465,16 +479,45 @@ static void show_crash(struct asm_regs *ctx)
     printf("\n");
 }
 
+static bool handle_vm_pagefault(uintptr_t fault_addr, size_t cause_csr)
+{
+    if (fault_addr > MMU_ADDRESS_LOWER_MAX)
+        return false;
+
+    int access = 0;
+    switch (cause_csr) {
+    case 13: access = KERN_MAP_PERM_R; break;
+    case 15: access = KERN_MAP_PERM_W; break;
+    case 12: access = KERN_MAP_PERM_X; break;
+    default: return false;
+    }
+
+    struct vm_aspace *as = thread_get_aspace(thread_current());
+    return as && vm_aspace_handle_page_fault(as, (void *)fault_addr, access);
+}
+
 void c_trap(struct asm_regs *ctx)
 {
     struct thread *t = thread_current();
 
-    if (ctx->status & (1 << 8))
+    assert(!ints_disable());
+
+    bool from_userspace = !(ctx->status & (1 << 8));
+
+    if (from_userspace)
         t->user_context = ctx;
 
     if (ctx->cause == ((1ULL << 63) | 5)) {
         printf("timer IRQ\n");
-        //thread_handle_timeout
+        uint64_t now = time_get();
+        // Currently fix timeslice at 1/4th seconds.
+        time_slice_end_time = now + SECOND / 4;
+        while (waiting_threads.head) {
+            if (waiting_threads.head->wait_timeout_time > now)
+                break;
+            thread_handle_timeout(waiting_threads.head);
+        }
+        update_timer();
         thread_reschedule();
         static int cnt;
         if (cnt++ == 5)
@@ -488,24 +531,25 @@ void c_trap(struct asm_regs *ctx)
             struct thread *t = thread_current();
             if (ctx->cause != 12 && t && t->trap_pc &&
                 fault_addr >= t->trap_pagefault_lo &&
-                fault_addr <= t->trap_pagefault_hi)
+                fault_addr <= t->trap_pagefault_hi &&
+                !t->trap_handler_running)
             {
+                assert(!from_userspace);
+                // The trap handler is normally used to safely access userspace.
+                // In that case, the page fault could be resolved using the VM
+                // system.
+                t->trap_handler_running = true; // disallow recursive traps
+                bool ok = handle_vm_pagefault(fault_addr, ctx->cause);
+                t->trap_handler_running = false;
+                if (ok)
+                    goto done; // retry access
+                // Otherwise invoke exception handler.
                 ctx->regs[2] = t->trap_sp;
                 ctx->pc = t->trap_pc;
                 goto done;
             }
-            if (fault_addr <= MMU_ADDRESS_LOWER_MAX) {
-                int access = 0;
-                switch (ctx->cause) {
-                case 13: access = KERN_MAP_PERM_R; break;
-                case 15: access = KERN_MAP_PERM_W; break;
-                case 12: access = KERN_MAP_PERM_X; break;
-                default: assert(0);
-                }
-                struct vm_aspace *as = thread_get_aspace(thread_current());
-                if (as && vm_aspace_handle_page_fault(as, (void *)fault_addr, access))
-                    goto done;
-            }
+            if (from_userspace && handle_vm_pagefault(fault_addr, ctx->cause))
+                goto done;
         }
         show_crash(ctx);
         panic("stop.\n");
@@ -528,27 +572,35 @@ bool run_trap_pagefaults(uintptr_t ok_lo, uintptr_t ok_hi, void (*fn)(void *),
     return run_with_trap_asm(fn, fn_ctx);
 }
 
-void futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups)
+uint64_t futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups)
 {
     assert(page->usage == PAGE_USAGE_USER);
-    struct thread **p_next = &page->u.user.futex_waiters;
+    struct futex_waiter **p_next = &page->u.user.futex_waiters;
+
+    uint64_t woken = 0;
 
     while (max_wakeups) {
-        struct thread *t = *p_next;
-        if (!t)
+        struct futex_waiter *f = *p_next;
+        if (!f)
             break;
 
-        assert(t->state == THREAD_STATE_WAIT_FUTEX);
+        assert(f->page == page);
+        assert(f->t->state == THREAD_STATE_WAIT_FUTEX);
 
-        if (offset < 0 || t->futex_page_offset == offset) {
+        if (offset < 0 || f->offset == offset) {
+            struct thread *t = f->t;
+            printf("futex waker %p\n", t);
+            *p_next = f->next;
+            t->futex = NULL;
             thread_set_state(t, THREAD_STATE_RUNNABLE);
             max_wakeups--;
-            *p_next = t->futex_next_waiter;
-            t->futex_next_waiter = NULL;
+            woken++;
         } else {
-            p_next = &t->futex_next_waiter;
+            p_next = &f->next;
         }
     }
+
+    return woken;
 }
 
 void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
@@ -556,24 +608,28 @@ void futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
     struct thread *t = thread_current();
     assert(page->usage == PAGE_USAGE_USER);
 
-    t->futex_page_offset = offset;
-    t->futex_next_waiter = page->u.user.futex_waiters;
+    struct futex_waiter f = {
+        .t = t,
+        .page = page,
+        .offset = offset,
+    };
 
-    page->u.user.futex_waiters = t;
+    t->futex = &f;
+
+    f.next = page->u.user.futex_waiters;
+    page->u.user.futex_waiters = &f;
 
     t->wait_timeout_time = timeout_time;
     thread_set_state(t, THREAD_STATE_WAIT_FUTEX);
     thread_reschedule();
+
+    assert(!t->futex); // proper wakeup unsets it
 }
 
 static void idle_thread(void *ctx)
 {
     void (*boot_handler)(void) = ctx;
     boot_handler();
-
-    // This is bullshit of course.
-    while (1)
-        thread_reschedule();
 
     ints_enable();
     while (1)

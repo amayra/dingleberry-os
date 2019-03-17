@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 struct kern_thread_regs {
     // x0-x31 (x0 is ignored; included to avoid confusing register numbers)
@@ -8,12 +9,26 @@ struct kern_thread_regs {
     size_t pc;
 };
 
+struct kern_timespec {
+    int64_t sec;
+    uint32_t nsec;
+};
+
 // (Often used as magic value to refer to the calling thread.)
 #define KERN_HANDLE_INVALID         0
 
 #define KERN_IS_HANDLE_VALID(h) ((h) > KERN_HANDLE_INVALID)
 
-#define KERN_FN_GET_TIMER_FREQ      0
+// Return time configuration and current monotonic time (CLOCK_MONOTONIC).
+// Note: obviously, it would be better to enable userspace to compute this
+// on its own (getting frequency/base from kernel at start + using rdtime),
+// and obviously returning it via a pointer (instead of registers) is
+// inefficient, but for now this means less mess.
+// Parameters:
+//  a0: struct kern_timespec *
+//  returns: error code; can fail only on invalid arg. pointer
+#define KERN_FN_GET_TIME            0
+
 #define KERN_FN_DEBUG_WRITE_CHAR    1
 #define KERN_FN_DEBUG_STOP          2
 
@@ -91,3 +106,13 @@ struct kern_thread_regs {
 //      context; the target thread will pretend to return with 1 as error code
 //  returns: error code (always 0 on success)
 #define KERN_FN_COPY_ASPACE         7
+
+// More or less emulates parts of the Linux futex syscall.
+//  a0: op
+//  a1: struct kern_timespec*
+//  a2: uaddr
+//  a3: val
+#define KERN_FN_FUTEX               8
+
+#define KERN_FUTEX_WAIT             1
+#define KERN_FUTEX_WAKE             2

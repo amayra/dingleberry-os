@@ -7,15 +7,15 @@
 static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
                                 size_t a3, size_t a4, size_t a5, size_t a6)
 {
-    register size_t r_a0 asm("a0") = a0;
-    register size_t r_a1 asm("a1") = a1;
-    register size_t r_a2 asm("a2") = a2;
-    register size_t r_a3 asm("a3") = a3;
-    register size_t r_a4 asm("a4") = a4;
-    register size_t r_a5 asm("a5") = a5;
-    register size_t r_a6 asm("a6") = a6;
-    register size_t r_a7 asm("a7") = fn;
-    asm volatile("ecall"
+    register size_t r_a0 __asm("a0") = a0;
+    register size_t r_a1 __asm("a1") = a1;
+    register size_t r_a2 __asm("a2") = a2;
+    register size_t r_a3 __asm("a3") = a3;
+    register size_t r_a4 __asm("a4") = a4;
+    register size_t r_a5 __asm("a5") = a5;
+    register size_t r_a6 __asm("a6") = a6;
+    register size_t r_a7 __asm("a7") = fn;
+    __asm volatile("ecall"
         : "=r" (r_a0),
           // Clobber the rest.
           "=r" (r_a1),

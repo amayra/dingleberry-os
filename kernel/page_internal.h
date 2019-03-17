@@ -33,7 +33,7 @@ struct phys_page {
             // futexes [along with per-addressspace hashtables if a certain flag
             // is set, because Linux figured out a global hashtable isn't so
             // great], but screw that.)
-            struct thread *futex_waiters;
+            struct futex_waiter *futex_waiters;
         } user;
     } u;
 };

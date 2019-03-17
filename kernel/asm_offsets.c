@@ -27,13 +27,14 @@ void unused(void) {
 
     OFFSET(struct thread, scratch_sp)
     OFFSET(struct thread, scratch_tp)
-    OFFSET(struct thread, kernel_sp);
-    OFFSET(struct thread, kernel_pc);
+    OFFSET(struct thread, kernel_sp)
+    OFFSET(struct thread, kernel_pc)
     OFFSET(struct thread, syscall_ra)
     OFFSET(struct thread, syscall_sp)
     OFFSET(struct thread, syscall_gp)
     OFFSET(struct thread, syscall_tp)
     OFFSET(struct thread, syscall_pc)
+    OFFSET(struct thread, syscall_sstatus)
     OFFSET(struct thread, syscall_cs)
     OFFSET(struct thread, trap_sp);
     OFFSET(struct thread, trap_pc);

@@ -13,14 +13,10 @@
 
 #include <libinsanity/minmax.h>
 
-extern uint64_t timer_frequency;
-
 // Preliminary way to allocate kernel virtual memory space. Obviously this needs
 // to be replaced by something proper.
 extern void *virt_alloc_cur;
 extern void *virt_alloc_end;
-
-uint64_t read_timer_ticks(void);
 
 #define panic(...) do {                                                     \
     printf("%s:%d:%s: PANIC: ", __FILE__, __LINE__, __PRETTY_FUNCTION__);   \
@@ -37,6 +33,6 @@ uint64_t read_timer_ticks(void);
 #define ARRAY_ELEMS(x) (sizeof(x) / sizeof((x)[0]) + 0 * REQUIRE_ARRAY(x))
 
 /* Number of entries in syscall_table[]. */
-#define SYSCALL_COUNT 8
+#define SYSCALL_COUNT 9
 
 void syscalls_self_check(void);

@@ -14,6 +14,13 @@ struct thread_list_node {
     struct thread *prev, *next;
 };
 
+struct futex_waiter {
+    struct thread *t;
+    struct phys_page *page;
+    int offset;
+    struct futex_waiter *next;
+};
+
 // Represents a kernel or user mode thread. (User mode threads always imply a
 // kernel thread.)
 // The pointer to this struct is saved in the tp register while in kernel
@@ -34,6 +41,7 @@ struct thread {
     size_t syscall_gp;
     size_t syscall_tp;
     size_t syscall_pc;
+    size_t syscall_sstatus;
     size_t syscall_cs[12];
 
     // For in-kernel thread switching (asm).
@@ -45,6 +53,7 @@ struct thread {
     uintptr_t trap_pc;
     uintptr_t trap_pagefault_lo;
     uintptr_t trap_pagefault_hi;
+    bool trap_handler_running;
 
     // Temporary while in IRQ handling code (or after thread creation).
     struct asm_regs *user_context;
@@ -62,11 +71,8 @@ struct thread {
     //  THREAD_STATE_WAIT_FUTEX
     uint64_t wait_timeout_time;
 
-    //Futex waiting is done by enqueuing the thread to a page struct, so the
-    // full address is implicit. Store an address to reduce redundant wakeups
-    // just because e.g. 2 mutexes share the same page.
-    int futex_page_offset;
-    struct thread *futex_next_waiter;
+    // For THREAD_STATE_WAIT_FUTEX.
+    struct futex_waiter *futex;
 
     // Number of handles referencing this. It legally can be 0 for a thread
     // that does not have handles to it yet.

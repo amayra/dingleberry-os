@@ -99,6 +99,9 @@ trap:
 
     CALLEE_SAVED_LS(sd, THREAD_SYSCALL_CS, tp)
 
+    csrr ra, sstatus
+    sd ra, (THREAD_SYSCALL_SSTATUS)(tp)
+
     csrr ra, sepc
     addi ra, ra, 4
     sd ra, (THREAD_SYSCALL_PC)(tp)
@@ -154,6 +157,9 @@ trap:
     ld tp, (THREAD_SYSCALL_TP)(t0)
 
     CALLEE_SAVED_LS(ld, THREAD_SYSCALL_CS, t0)
+
+    ld t1, (THREAD_SYSCALL_SSTATUS)(t0)
+    csrw sstatus, t1
 
     ld t1, (THREAD_SYSCALL_PC)(t0)
     csrw sepc, t1

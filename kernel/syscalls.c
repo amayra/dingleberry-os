@@ -2,7 +2,10 @@
 #include "handle.h"
 #include "kernel.h"
 #include "mmu.h"
+#include "page_alloc.h"
+#include "page_internal.h"
 #include "thread.h"
+#include "time.h"
 #include "virtual_memory.h"
 
 #include <kernel/api.h>
@@ -27,31 +30,31 @@ static bool copy_user_(void *dst, void *src, size_t size)
     return ok;
 }
 
-static bool valid_user_address(void *user_addr, size_t size)
+static bool valid_user_address(uintptr_t user_addr, size_t size)
 {
     return size <= MMU_ADDRESS_LOWER_MAX &&
-        (uintptr_t)user_addr <= MMU_ADDRESS_LOWER_MAX + 1 - size;
+        user_addr <= MMU_ADDRESS_LOWER_MAX + 1 - size;
 }
 
 // Copy from/to userspaces addresses. The user_src address is sanitized, and
 // faults to it are caught. On a fault, false is returned, and *dst might have
 // been partially written to.
-static bool copy_from_user(void *dst, void *user_src, size_t size)
+static bool copy_from_user(void *dst, uintptr_t user_src, size_t size)
 {
     if (!valid_user_address(user_src, size))
         return false;
     assert((uintptr_t)dst >= KERNEL_SPACE_BASE); // just a kernel code bug
 
-    return copy_user_(dst, user_src, size);
+    return copy_user_(dst, (void *)user_src, size);
 }
 
-static bool copy_to_user(void *user_dst, void *src, size_t size)
+static bool copy_to_user(uintptr_t user_dst, void *src, size_t size)
 {
     if (!valid_user_address(user_dst, size))
         return false;
     assert((uintptr_t)src >= KERNEL_SPACE_BASE); // just a kernel code bug
 
-    return copy_user_(user_dst, src, size);
+    return copy_user_((void *)user_dst, src, size);
 }
 
 // Pseudo entry for out of bounds syscall values. (Called from trap.S.)
@@ -61,9 +64,13 @@ size_t syscall_unavailable(size_t nr)
     return -1;
 }
 
-static size_t syscall_get_timer_freq(void)
+static int syscall_get_time(uintptr_t time_ptr)
 {
-    return timer_frequency;
+    struct kern_timespec t;
+    time_to_timespec(&t, time_get());
+    if (!copy_to_user(time_ptr, &t, sizeof(t)))
+        return -1;
+    return 0;
 }
 
 static void syscall_debug_write_char(size_t v)
@@ -123,7 +130,7 @@ static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
     return handle_add_or_free(&h);
 }
 
-static int syscall_thread_set_context(int thread_handle, void *regs_arg)
+static int syscall_thread_set_context(int thread_handle, uintptr_t regs_arg)
 {
     struct thread *t = lookup_thread(thread_handle);
     if (!t)
@@ -185,6 +192,69 @@ static int syscall_close(int64_t handle)
     return 0;
 }
 
+static bool get_futex_addr(uintptr_t uaddr, struct phys_page **page, int *offset)
+{
+    struct mmu *mmu = thread_get_mmu(thread_current());
+    *page = NULL;
+    *offset = uaddr & (PAGE_SIZE - 1);
+
+    uaddr -= *offset;
+
+    uint64_t phys_addr;
+    size_t page_size;
+    int flags;
+    if (!mmu_read_entry(mmu, (void *)uaddr, &phys_addr, &page_size, &flags))
+        return false;
+
+    *page = phys_page_get(phys_addr);
+    if (!*page)
+        return false;
+
+    if ((*page)->usage != PAGE_USAGE_USER)
+        return false;
+
+    return true;
+}
+
+static int syscall_futex(int op, uintptr_t timeptr, uintptr_t uaddr, size_t val)
+{
+    switch (op) {
+    case KERN_FUTEX_WAIT: {
+        uint64_t timeout = UINT64_MAX;
+        if (timeptr) {
+            struct kern_timespec time;
+            if (!copy_from_user(&time, timeptr, sizeof(time)))
+                return -1; // invalid timeptr pointer
+            // (Linux uses a relative time here, we don't.)
+            timeout = time_from_timespec(&time);
+        }
+        int cur;
+        if (!copy_from_user(&cur, uaddr, sizeof(cur)))
+            return -1; // invalid user address
+        if (cur != val)
+            return -1; // value changed; try again
+        struct phys_page *page;
+        int offset;
+        if (!get_futex_addr(uaddr, &page, &offset))
+            return -1; // ???
+        futex_wait(page, offset, timeout);
+        return 0;
+    }
+    case KERN_FUTEX_WAKE: {
+        // Ensure presence.
+        if (!copy_from_user(&(int){0}, uaddr, sizeof(int)))
+            return -1; // invalid user address
+        struct phys_page *page;
+        int offset;
+        if (!get_futex_addr(uaddr, &page, &offset))
+            return -1; // ???
+        return futex_wake(page, offset, val);
+    }
+    default:
+        return -1;
+    }
+}
+
 // All of the following offsets/sizes are hardcoded in ASM.
 
 struct syscall_entry {
@@ -193,7 +263,7 @@ struct syscall_entry {
 };
 
 const struct syscall_entry syscall_table[] = {
-    [KERN_FN_GET_TIMER_FREQ]        = {1, syscall_get_timer_freq},
+    [KERN_FN_GET_TIME]              = {1, syscall_get_time},
     [KERN_FN_DEBUG_WRITE_CHAR]      = {0, syscall_debug_write_char},
     [KERN_FN_DEBUG_STOP]            = {0, syscall_debug_stop},
     [KERN_FN_THREAD_CREATE]         = {1, syscall_thread_create},
@@ -201,6 +271,7 @@ const struct syscall_entry syscall_table[] = {
     [KERN_FN_MMAP]                  = {1, syscall_mmap},
     [KERN_FN_COPY_ASPACE]           = {1, syscall_copy_aspace},
     [KERN_FN_CLOSE]                 = {1, syscall_close},
+    [KERN_FN_FUTEX]                 = {1, syscall_futex},
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };

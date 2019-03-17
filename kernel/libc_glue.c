@@ -3,7 +3,7 @@
 
 #include <libinsanity/printf.h>
 
-#include "opensbi.h"
+#include "sbi.h"
 
 struct printf_buf {
     char *buf;

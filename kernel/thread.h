@@ -94,7 +94,7 @@ void thread_reschedule(void);
 
 // Wakeup max_wakeups threads queued as futex waiters for this page. offset is
 // the offset within the page, or -1 to affect the entire page.
-void futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups);
+uint64_t futex_wake(struct phys_page *page, int offset, uint64_t max_wakeups);
 
 // Make the current thread wait for a corresponding futex_wake() event. This
 // only handles sleeping.

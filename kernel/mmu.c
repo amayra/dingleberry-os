@@ -231,7 +231,8 @@ static void mmu_unmap_internal(struct mmu *mmu, void *virt, size_t page_size)
             // them all, since this is a pretty obscure situation anyway. It is
             // required to do so for example to make threads re-enqueue them to
             // the correct page on COW.
-            futex_wake(page, -1, INT64_MAX);
+            if (page->u.user.futex_waiters)
+                futex_wake(page, -1, INT64_MAX);
 
             // This mapping _could_ be part of the list, but not necessarily.
             // If it's in there, it must be removed. If it's not in there, it
