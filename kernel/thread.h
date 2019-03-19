@@ -28,6 +28,7 @@ struct fp_regs {
 enum thread_priority {
     THREAD_PRIORITY_IDLE,
     THREAD_PRIORITY_NORMAL,
+    THREAD_PRIORITY_KERNEL,
     THREAD_PRIORITY_NUM         // not a valid priority
 };
 
@@ -36,6 +37,7 @@ enum thread_state {
     THREAD_STATE_FINE,          // this thread is totally fine and takes it easy
     THREAD_STATE_RUNNABLE,      // currently waiting to be scheduled
     THREAD_STATE_WAIT_FUTEX,    // waiting on a futex
+    THREAD_STATE_WAIT_SLEEP,    // will voluntarily check for new state on wakeup
     THREAD_STATE_DEAD,          // fucked up
 };
 
@@ -54,10 +56,6 @@ void thread_set_kernel_context(struct thread *t, void (*fn)(void *ctx), void *ct
 // If the context can't be set (such as being a kernel thread, or stuck in a
 // syscall), this returns false.
 bool thread_set_user_context(struct thread *t, struct asm_regs *regs);
-
-// Free the thread. It is an error to free a thread that is still referenced by
-// handles.
-void thread_free(struct thread *t);
 
 // Return current kernel thread.
 struct thread *thread_current(void);

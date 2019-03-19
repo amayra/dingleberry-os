@@ -20,6 +20,10 @@ extern int64_t __self_handle;
 
 #define SECOND_NS (1000ULL * 1000 * 1000)
 
+// Kernel TLS slots (KERN_FN_TLS) and their uses.
+#define KTLS_CLEARTID   0
+#define KTLS_HANDLE     1
+
 #define __panic(...) do {                                                   \
     printf("%s:%d:%s: PANIC: ", __FILE__, __LINE__, __PRETTY_FUNCTION__);   \
     printf(__VA_ARGS__);                                                    \
@@ -81,14 +85,17 @@ _Noreturn void __assert_fail(const char *expr, const char *file, int line,
     abort();
 }
 
-long __emu_SYS_exit_1(long a)
+static size_t ktls_get(size_t index)
 {
-    __panic_ni();
+    if (index >= KERN_TLS_NUM)
+        __panic("invalid TLS index\n");
+    return kern_call4(KERN_FN_TLS, KERN_HANDLE_INVALID, KERN_TLS_GET, index, 0);
 }
 
-long __emu_SYS_exit_group_1(long a)
+static void ktls_set(int64_t handle, size_t index, size_t val)
 {
-    __panic_ni();
+    if ((long)kern_call4(KERN_FN_TLS, handle, KERN_TLS_SET, index, val) < 0)
+        __panic("TLS set failed\n");
 }
 
 long __emu_SYS_openat_3(long a, const char *b, long c)
@@ -244,7 +251,7 @@ long __emu_SYS_mmap_6(void *addr, long length, long prot, long flags, long fd,
 
 long __emu_SYS_munmap_2(void *a, long b)
 {
-    __panic_ni();
+    return kern_munmap(KERN_HANDLE_INVALID, a, b) < 0 ? -EINVAL : 0;
 }
 
 long __emu_SYS_mprotect_3(long addr, long length, long prot)
@@ -275,12 +282,64 @@ long __emu_SYS_rt_sigprocmask_4(long a, const void *b, void *c, long d)
 
 long __emu_SYS_set_tid_address_1(volatile void *a)
 {
-    // Musl sets this on initialization, and expects it back via gettid in some
-    // places. Ignore it for now.
+    // TODO: make pthread_exit() work, I guess.
+    ktls_set(KERN_HANDLE_INVALID, KTLS_CLEARTID, (uintptr_t)a);
     return 0;
 }
 
 void __unmapself(void *p, size_t s)
+{
+    __panic_ni();
+}
+
+// Reminder: this is the Linux syscall for _thread_ exit.
+long __emu_SYS_exit_1(long a)
+{
+    volatile int *ctid = (void *)ktls_get(KTLS_CLEARTID);
+    int64_t h = ktls_get(KTLS_HANDLE);
+
+    // musl should be calling this only for non-detached threads, which always
+    // use this. Detached threads use __unmapself() instead.
+    assert(ctid);
+    assert(KERN_IS_HANDLE_VALID(h));
+
+    // Wake and exit thread without touching stack. The caller of pthread_join()
+    // could really terminate the thread itself (and that would be much simpler),
+    // but Linux/musl don't work this way. musl will unmap the stack as soon as
+    // it thinks the thread is gone, so the thread must not be accessed, as the
+    // thread might actually terminate a moment later.
+    // Also this looks pretty painful because I didn't want to add an "asm" mode
+    // to api.h; so this is inline asm, and all constants are passed as explicit
+    // parameters. In addition, gcc's asm constraints are brainfucked.
+    register int64_t r_h __asm("a0") = h;
+    register volatile int *r_ctid __asm("a2") = ctid;
+    __asm volatile("mv s0, %[h]\n"          // copy to a syscall-saved register
+                   "mv a2, %[ctid]\n"
+                   "sd zero, (a2)\n"        // clear ctid
+                   "li a7, %[futex_fn]\n"
+                   "li a0, %[futex_wake]\n"
+                   "li a1, 0\n"
+                   "li a3, -1\n"
+                   "ecall\n"                // futex wakeup on ctid
+                   "li a7, %[close_fn]\n"
+                   "mv a0, s0\n"
+                   "ecall\n"
+                   "1:\n"
+                   "li a7, %[stop_fn]\n"
+                   "ecall\n"
+                   "j 1b\n"
+                   :
+                   : [h] "r" (r_h),
+                     [ctid] "r" (r_ctid),
+                     [futex_fn] "i" (KERN_FN_FUTEX),
+                     [futex_wake] "i" (KERN_FUTEX_WAKE),
+                     [close_fn] "i" (KERN_FN_CLOSE),
+                     [stop_fn] "i" (KERN_FN_DEBUG_STOP)
+                   : "memory");
+    while(1);
+}
+
+long __emu_SYS_exit_group_1(long a)
 {
     __panic_ni();
 }
@@ -332,8 +391,6 @@ int __clone(int (*ep)(void *), void *stack, int flags, void *arg, ...)
     regs.regs[3] = gp;
     regs.regs[4] = (uintptr_t)tls;
     regs.regs[10] = (uintptr_t)arg;
-    // (the plan is to set pc to a stub function which uses this)
-    regs.regs[11] = (uintptr_t)ctid;
     regs.pc = (uintptr_t)ep;
 
     int64_t h = kern_thread_create(__self_handle, false);
@@ -342,6 +399,11 @@ int __clone(int (*ep)(void *), void *stack, int flags, void *arg, ...)
 
     if (ptid)
         *ptid = h; // maybe?
+
+    if (ctid)
+        ktls_set(h, KTLS_CLEARTID, (uintptr_t)ctid);
+
+    ktls_set(h, KTLS_HANDLE, h);
 
     // This "starts" the thread.
     if (kern_thread_set_context(h, &regs) < 0)

@@ -56,8 +56,8 @@ int crown_jewels;
 static void *musl_thread(void *a)
 {
     printf("hello from a musl thread\n");
-    while(1) {
-        printf("lock... from %s\n", __PRETTY_FUNCTION__);
+    for (int n = 0; n < 3; n++) {
+        printf("lock... from %s (%d)\n", __PRETTY_FUNCTION__, n);
         pthread_mutex_lock(&testmutex);
         printf("locked! from %s\n", __PRETTY_FUNCTION__);
         assert(!crown_jewels);
@@ -70,7 +70,7 @@ static void *musl_thread(void *a)
         pthread_mutex_unlock(&testmutex);
         //kern_yield();
     }
-    return NULL;
+    return (void *)45678;
 }
 
 int main(void)
@@ -98,10 +98,12 @@ int main(void)
 #endif
 
     pthread_t res;
-    printf("res: %d\n", pthread_create(&res, NULL, musl_thread, (void *)1234));
+    r = pthread_create(&res, NULL, musl_thread, (void *)1234);
+    printf("res: %d\n", r);
+    assert(r == 0);
 
-    while(1) {
-        printf("lock... from %s\n", __PRETTY_FUNCTION__);
+    for (int n = 0; n < 10; n++) {
+        printf("lock... from %s (%d)\n", __PRETTY_FUNCTION__, n);
         pthread_mutex_lock(&testmutex);
         printf("locked! from %s\n", __PRETTY_FUNCTION__);
         assert(!crown_jewels);
@@ -114,6 +116,13 @@ int main(void)
         pthread_mutex_unlock(&testmutex);
         //kern_yield();
     }
+
+    void *ret = NULL;
+    r = pthread_join(res, &ret);
+
+    printf("pthread_join => %d %p\n", r, ret);
+
+    while(1);
 
     thread_cr(2);
     thread_cr(3);

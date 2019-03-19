@@ -29,9 +29,13 @@ bool run_with_trap_asm(void *a, void *b);
 static struct thread_list_head all_threads;
 static struct thread_list_head waiting_threads;
 static struct thread_list_head runnable_threads[THREAD_PRIORITY_NUM];
+static struct thread_list_head deathrow_threads;
 
 // Time at which the next scheduling decision should be made. Per CPU (?).
 static uint64_t time_slice_end_time;
+
+// Very important. Per CPU (?).
+static struct thread *boss_thread;
 
 // (For simpler asm.)
 static_assert(!(sizeof(struct asm_regs) & (STACK_ALIGNMENT - 1)), "");
@@ -111,13 +115,27 @@ fail:
     return NULL;
 }
 
-void thread_free(struct thread *t)
+// boss_thread does all the work, and goes to sleep once it's done. This wakes
+// up the boss, which will then check for undone work.
+static void boss_wake(void)
 {
+    assert(boss_thread);
+
+    // This naive way works because we don't support SMP or preemption.
+    if (boss_thread->state != THREAD_STATE_RUNNABLE) {
+        assert(boss_thread->state == THREAD_STATE_WAIT_SLEEP);
+
+        thread_set_state(boss_thread, THREAD_STATE_RUNNABLE);
+        thread_reschedule();
+    }
+}
+
+static void thread_destroy(struct thread *t)
+{
+    assert(t->state == THREAD_STATE_DEAD);
     assert(t->refcount == 0); // handles still referencing it?
     assert(thread_current() != t);
-
-    thread_set_aspace(t, NULL);
-    thread_set_state(t, THREAD_STATE_DEAD);
+    assert(t->aspace == NULL);
 
     uintptr_t iaddr = (uintptr_t)t;
     assert(iaddr >= thread_aspace_base);
@@ -127,6 +145,7 @@ void thread_free(struct thread *t)
     char *base = (char *)(thread_aspace_base + index * KERNEL_THREAD_VSIZE);
     assert(base == t->base);
 
+    LL_REMOVE(&deathrow_threads, t, st_siblings);
     LL_REMOVE(&all_threads, t, all_threads);
 
     // Unmap and free the pages; makes t pointer invalid.
@@ -279,6 +298,7 @@ static void thread_handle_timeout(struct thread *t)
     }
     default:
         // (must have been in a state that waits)
+        // (THREAD_STATE_WAIT_SLEEP can't use timeouts currently)
         abort();
     }
 }
@@ -339,10 +359,11 @@ void thread_set_state(struct thread *t, enum thread_state state)
 
     switch (t->state) {
     case THREAD_STATE_RUNNABLE:
-        LL_REMOVE(&runnable_threads[t->priority], t, runnable);
+        LL_REMOVE(&runnable_threads[t->priority], t, st_siblings);
         break;
     case THREAD_STATE_WAIT_FUTEX:
-        LL_REMOVE(&waiting_threads, t, waiting);
+    case THREAD_STATE_WAIT_SLEEP:
+        LL_REMOVE(&waiting_threads, t, st_siblings);
         break;
     case THREAD_STATE_NO_CONTEXT:
     case THREAD_STATE_FINE:
@@ -356,16 +377,19 @@ void thread_set_state(struct thread *t, enum thread_state state)
 
     switch (t->state) {
     case THREAD_STATE_RUNNABLE:
-        LL_APPEND(&runnable_threads[t->priority], t, runnable);
+        LL_APPEND(&runnable_threads[t->priority], t, st_siblings);
         break;
+    case THREAD_STATE_WAIT_SLEEP:
     case THREAD_STATE_WAIT_FUTEX: {
+        if (t->state == THREAD_STATE_WAIT_SLEEP)
+            t->wait_timeout_time = UINT64_MAX; // no timeout
         // Inserted in a sorted manner.
         struct thread *insert_before = NULL; // NULL => insert at end
         if (t->wait_timeout_time < UINT64_MAX) {
             // Look for the first entry that has a higher wakeup time. Naive; a
             // better implementation would probably use a heap or so.
             for (struct thread *cur = waiting_threads.head; cur;
-                 cur = cur->waiting.next)
+                 cur = cur->st_siblings.next)
             {
                 if (cur->wait_timeout_time > t->wait_timeout_time) {
                     insert_before = cur;
@@ -373,14 +397,24 @@ void thread_set_state(struct thread *t, enum thread_state state)
                 }
             }
         }
-        LL_INSERT_BEFORE(&waiting_threads, insert_before, t, waiting);
+        LL_INSERT_BEFORE(&waiting_threads, insert_before, t, st_siblings);
         if (waiting_threads.head == t)
             update_timer();
         //printf("wait insert %p\n", t);
         break;
     }
-    case THREAD_STATE_FINE:
     case THREAD_STATE_DEAD:
+        // Handles still referencing it? If it should be possible that threads
+        // can be dead while still referenced, another state would be needed.
+        assert(t->refcount == 0);
+        // Destroy associated aspace.
+        thread_set_aspace(t, NULL);
+        // Let boss_thread actually destroy threads. Required if t is the
+        // current thread.
+        LL_APPEND(&deathrow_threads, t, st_siblings);
+        boss_wake();
+        break;
+    case THREAD_STATE_FINE:
         break;
     case THREAD_STATE_NO_CONTEXT: // fallthrough: state can't be entered
     default:
@@ -510,6 +544,10 @@ void c_trap(struct asm_regs *ctx)
     if (ctx->cause == ((1ULL << 63) | 5)) {
         printf("timer IRQ\n");
         uint64_t now = time_get();
+        // Exclude theoretical corner case of waking thread with infinite
+        // timeout.
+        if (now == UINT64_MAX)
+            now = UINT64_MAX - 1;
         // Currently fix timeslice at 1/4th seconds.
         time_slice_end_time = now + SECOND / 4;
         while (waiting_threads.head) {
@@ -632,14 +670,27 @@ int futex_wait(struct phys_page *page, int offset, uint64_t timeout_time)
     return f.result;
 }
 
-static void idle_thread(void *ctx)
+static void idle_thread_fn(void *ctx)
+{
+    ints_enable();
+    while (1)
+        asm volatile("wfi");
+}
+
+static void boss_thread_fn(void *ctx)
 {
     void (*boot_handler)(void) = ctx;
     boot_handler();
 
-    ints_enable();
-    while (1)
-        asm volatile("wfi");
+    while (1) {
+        // Destroy threads that need to be destroyed.
+        while (deathrow_threads.head)
+            thread_destroy(deathrow_threads.head);
+
+        // Wait again.
+        thread_set_state(thread_current(), THREAD_STATE_WAIT_SLEEP);
+        thread_reschedule();
+    }
 }
 
 void threads_init(void (*boot_handler)(void))
@@ -653,15 +704,22 @@ void threads_init(void (*boot_handler)(void))
     for (size_t n = 0; n < ARRAY_ELEMS(thread_freemap); n++)
         thread_freemap[n] = ~(uint32_t)0;
 
-    struct thread *t = thread_create();
-    if (!t)
+    struct thread *idle = thread_create();
+    if (!idle)
         panic("Could not create idle thread.\n");
 
-    thread_set_kernel_context(t, idle_thread, boot_handler);
-    thread_set_priority(t, THREAD_PRIORITY_IDLE);
+    thread_set_kernel_context(idle, idle_thread_fn, NULL);
+    thread_set_priority(idle, THREAD_PRIORITY_IDLE);
+
+    boss_thread = thread_create();
+    if (!boss_thread)
+        panic("Could not create boss thread.\n");
+
+    thread_set_kernel_context(boss_thread, boss_thread_fn, boot_handler);
+    thread_set_priority(boss_thread, THREAD_PRIORITY_KERNEL);
 
     // (because we switch directly to the new thread)
-    thread_set_state(t, THREAD_STATE_FINE);
+    thread_set_state(boss_thread, THREAD_STATE_FINE);
 
     // Set a dummy tp while we're switching to new thread. This gives the trap
     // handler a chance to catch kernel exceptions until a real thread pointer
@@ -675,7 +733,7 @@ void threads_init(void (*boot_handler)(void))
           [tp] "r" (&dummy)
         : "memory");
 
-    thread_switch_to(t);
+    thread_switch_to(boss_thread);
     panic("unreachable\n");
 }
 
@@ -711,7 +769,7 @@ static void thread_handle_unref(struct handle *h)
 
     h->u.thread->refcount -= 1;
     if (h->u.thread->refcount == 0)
-        thread_free(h->u.thread);
+        thread_set_state(h->u.thread, THREAD_STATE_DEAD);
 }
 
 const struct handle_vtable handle_thread = {

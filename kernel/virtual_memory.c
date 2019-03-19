@@ -669,6 +669,8 @@ static bool split_map(struct vm_aspace *as, void *addr, size_t length,
         *out_b = inner_b;
     }
 
+    vm_aspace_dump(as);
+
     return true;
 }
 

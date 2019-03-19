@@ -5,6 +5,7 @@
 #include "page_alloc.h"
 #include "page_internal.h"
 #include "thread.h"
+#include "thread_internal.h"
 #include "time.h"
 #include "virtual_memory.h"
 
@@ -105,7 +106,7 @@ static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
     if (new_aspace) {
         as = vm_aspace_create();
         if (!as) {
-            thread_free(new);
+            thread_set_state(new, THREAD_STATE_DEAD);
             return -1; // OOM
         }
         struct mmu *mmu = vm_aspace_get_mmu(as);
@@ -114,7 +115,7 @@ static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
         mmu_switch_to(thread_get_mmu(thread_current()));
         if (!ok) {
             vm_aspace_free(as);
-            thread_free(new);
+            thread_set_state(new, THREAD_STATE_DEAD);
             return -1; // OOM
         }
     }
@@ -150,7 +151,7 @@ static int syscall_thread_set_context(int thread_handle, uintptr_t regs_arg)
     return 0;
 }
 
-static void *syscall_mmap(uint64_t dst_handle, void *addr, size_t length,
+static void *syscall_mmap(int64_t dst_handle, void *addr, size_t length,
                           int flags, int handle, uint64_t offset)
 {
     struct thread *t = lookup_thread(dst_handle);
@@ -162,7 +163,16 @@ static void *syscall_mmap(uint64_t dst_handle, void *addr, size_t length,
     return vm_mmap(as, addr, length, flags, NULL, offset);
 }
 
-static int syscall_mprotect(uint64_t dst_handle, void *addr, size_t length,
+static int syscall_munmap(int64_t dst_handle, void *addr, size_t length)
+{
+    struct thread *t = lookup_thread(dst_handle);
+    if (!t)
+        return -1; // bad handle
+    struct vm_aspace *as = thread_get_aspace(t);
+    return vm_munmap(as, addr, length) ? 0 : -1;
+}
+
+static int syscall_mprotect(int64_t dst_handle, void *addr, size_t length,
                             unsigned remove_flags, unsigned add_flags)
 {
     struct thread *t = lookup_thread(dst_handle);
@@ -271,6 +281,25 @@ static int syscall_yield(void)
     return 0;
 }
 
+static size_t syscall_tls(int64_t handle, int op, unsigned index, size_t val)
+{
+    struct thread *t = lookup_thread(handle);
+    if (!t)
+        return (size_t)-1; // bad handle
+    switch (op) {
+    case KERN_TLS_GET:
+        if (index >= KERN_TLS_NUM)
+            return val; // invalid index
+        return t->user_tls[index];
+    case KERN_TLS_SET:
+        if (index >= KERN_TLS_NUM)
+            return (size_t)-1; // invalid index
+        t->user_tls[index] = val;
+        return 0;
+    }
+    return (size_t)-1; // unknown OP
+}
+
 // All of the following offsets/sizes are hardcoded in ASM.
 
 struct syscall_entry {
@@ -290,6 +319,8 @@ const struct syscall_entry syscall_table[] = {
     [KERN_FN_CLOSE]                 = {1, syscall_close},
     [KERN_FN_FUTEX]                 = {1, syscall_futex},
     [KERN_FN_YIELD]                 = {1, syscall_yield},
+    [KERN_FN_TLS]                   = {1, syscall_tls},
+    [KERN_FN_MUNMAP]                = {1, syscall_munmap},
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };

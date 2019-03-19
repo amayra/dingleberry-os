@@ -132,3 +132,28 @@ struct kern_timespec {
 
 // Discard the current thread's time slice.
 #define KERN_FN_YIELD               10
+
+// Access user per-thread state. This was only added to appease musl userland,
+// which would require more intrusive changes to avoid it (or more Linux
+// emulation in the kernel). Normally, userland should keep these things in its
+// normal thread control block. TLS values are initialized to 0.
+// Parameters:
+//  a0: thread handle (KERN_HANDLE_INVALID: calling thread)
+//  a1: operation (KERN_TLS_GET/SET)
+//  a2: index (0..KERN_TLS_NUM-1).
+//  a3: KERN_TLS_SET: new TLS value, KERN_TLS_GET: error value to return
+//  returns: TLS value; KERN_TLS_SET returns error code, KERN_TLS_GET returns a3
+#define KERN_FN_TLS                 11
+
+#define KERN_TLS_GET                0
+#define KERN_TLS_SET                1
+
+// Number of available register-sized TLS slots per thread.
+#define KERN_TLS_NUM                2
+
+// Undo KERN_FN_MMAP.
+//  a0: thread handle for address space (KERN_HANDLE_INVALID: calling thread)
+//  a1: addr
+//  a2: length
+//  returns: error code
+#define KERN_FN_MUNMAP              12

@@ -70,8 +70,13 @@ static inline void *kern_mmap(uint64_t dst_handle, void *addr, size_t length,
                               length, flags, handle, offset);
 }
 
-static int kern_mprotect(uint64_t dst_handle, void *addr, size_t length,
-                         unsigned remove_flags, unsigned add_flags)
+static inline int kern_munmap(uint64_t dst_handle, void *addr, size_t length)
+{
+    return kern_call3(KERN_FN_MUNMAP, dst_handle, (uintptr_t)addr, length);
+}
+
+static inline int kern_mprotect(uint64_t dst_handle, void *addr, size_t length,
+                                unsigned remove_flags, unsigned add_flags)
 {
     return kern_call5(KERN_FN_MPROTECT, dst_handle, (uintptr_t)addr, length,
                       remove_flags, add_flags);

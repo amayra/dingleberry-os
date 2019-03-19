@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kernel/api.h>
+
 #include "thread.h"
 
 struct thread_list_head {
@@ -82,11 +84,10 @@ struct thread {
     struct thread_list_node all_threads;
     struct thread_list_node aspace_siblings;
 
-    // Threads in THREAD_STATE_RUNNABLE state (list head according to priority).
-    struct thread_list_node runnable;
-
-    // Threads in any wait state. The list is sorted by wait_timeout_time.
-    struct thread_list_node waiting;
+    // State-specific siblings. E.g.:
+    //  THREAD_STATE_RUNNABLE: runnable threads sorted by priority
+    //  THREAD_STATE_WAIT_*: waiting threads sorted by timeout
+    struct thread_list_node st_siblings;
 
     // Start of the thread allocation; implies stack size and total allocation
     // size; usually points to an unreadable guard page.
@@ -96,4 +97,7 @@ struct thread {
     // with 1 4K page per thread (including kernel stack), so if this gets too
     // much, move to a separate slab allocation. (Same for V extensions.)
     struct fp_regs fp_state;
+
+    // For KERN_FN_TLS
+    size_t user_tls[KERN_TLS_NUM];
 } __attribute__((aligned(STACK_ALIGNMENT)));
