@@ -157,3 +157,11 @@ struct kern_timespec {
 //  a2: length
 //  returns: error code
 #define KERN_FN_MUNMAP              12
+
+// Create a new instance of an existing handle. Depending on the type of the
+// handle, this might be a transparent new reference to an object, or behave
+// like a (partial) copy.
+//  a0: thread handle for target address space (KERN_HANDLE_INVALID: calling thread)
+//  a1: handle (from current address space)
+//  returns: handle, or error code
+#define KERN_FN_COPY_HANDLE         13

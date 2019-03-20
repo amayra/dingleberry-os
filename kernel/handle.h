@@ -89,3 +89,5 @@ struct handle_vtable {
 };
 
 extern const struct handle_vtable handle_thread;
+
+extern const struct handle_vtable *handle_vtable[HANDLE_TYPE_COUNT];

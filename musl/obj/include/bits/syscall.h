@@ -454,7 +454,7 @@
 #define SYS_geteuid 175
 #define SYS_getgid 176
 #define SYS_getegid 177
-#define SYS_gettid 178
+#define SYS_gettid SYS_gettid
 #define SYS_sysinfo 179
 #define SYS_mq_open 180
 #define SYS_mq_unlink 181
@@ -553,3 +553,5 @@
 #define SYS_pkey_alloc 289
 #define SYS_pkey_free 290
 #define SYS_sysriscv __NR_arch_specific_syscall
+
+#define SYS_fork SYS_fork

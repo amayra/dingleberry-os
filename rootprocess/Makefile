@@ -14,6 +14,7 @@ MUSL_OBJECTS = crt.o crt_c.o musl_emu.o \
                $(MUSL)/src/env/__environ.o \
                $(MUSL)/src/env/__init_tls.o \
                $(MUSL)/src/errno/__errno_location.o \
+               $(MUSL)/src/process/fork.o \
                $(MUSL)/src/internal/libc.o \
                $(MUSL)/src/internal/syscall_ret.o \
                $(MUSL)/src/mman/mmap.o \
@@ -27,11 +28,13 @@ MUSL_OBJECTS = crt.o crt_c.o musl_emu.o \
                $(MUSL)/src/thread/__wait.o \
                $(MUSL)/src/thread/default_attr.o \
                $(MUSL)/src/thread/pthread_create.o \
+               $(MUSL)/src/thread/pthread_detach.o \
                $(MUSL)/src/thread/pthread_join.o \
                $(MUSL)/src/thread/pthread_mutex_lock.o \
                $(MUSL)/src/thread/pthread_mutex_timedlock.o \
                $(MUSL)/src/thread/pthread_mutex_trylock.o \
                $(MUSL)/src/thread/pthread_mutex_unlock.o \
+               $(MUSL)/src/thread/pthread_self.o \
                $(MUSL)/src/thread/pthread_setcancelstate.o \
                $(MUSL)/src/thread/pthread_testcancel.o \
                $(MUSL)/src/thread/vmlock.o \

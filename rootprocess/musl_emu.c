@@ -16,7 +16,7 @@
 
 #include <libinsanity/printf.h>
 
-extern int64_t __self_handle;
+void __emu_init(int64_t self_handle);
 
 #define SECOND_NS (1000ULL * 1000 * 1000)
 
@@ -282,14 +282,8 @@ long __emu_SYS_rt_sigprocmask_4(long a, const void *b, void *c, long d)
 
 long __emu_SYS_set_tid_address_1(volatile void *a)
 {
-    // TODO: make pthread_exit() work, I guess.
     ktls_set(KERN_HANDLE_INVALID, KTLS_CLEARTID, (uintptr_t)a);
     return 0;
-}
-
-void __unmapself(void *p, size_t s)
-{
-    __panic_ni();
 }
 
 // Reminder: this is the Linux syscall for _thread_ exit.
@@ -313,8 +307,7 @@ long __emu_SYS_exit_1(long a)
     // parameters. In addition, gcc's asm constraints are brainfucked.
     register int64_t r_h __asm("a0") = h;
     register volatile int *r_ctid __asm("a2") = ctid;
-    __asm volatile("mv s0, %[h]\n"          // copy to a syscall-saved register
-                   "mv a2, %[ctid]\n"
+    __asm volatile("mv s0, a0\n"            // copy to a syscall-saved register
                    "sd zero, (a2)\n"        // clear ctid
                    "li a7, %[futex_fn]\n"
                    "li a0, %[futex_wake]\n"
@@ -323,10 +316,10 @@ long __emu_SYS_exit_1(long a)
                    "ecall\n"                // futex wakeup on ctid
                    "li a7, %[close_fn]\n"
                    "mv a0, s0\n"
-                   "ecall\n"
+                   "ecall\n"                // exit this thread
                    "1:\n"
                    "li a7, %[stop_fn]\n"
-                   "ecall\n"
+                   "ecall\n"                // unreachable
                    "j 1b\n"
                    :
                    : [h] "r" (r_h),
@@ -339,9 +332,97 @@ long __emu_SYS_exit_1(long a)
     while(1);
 }
 
+void __unmapself(void *p, size_t s)
+{
+    volatile int *ctid = (void *)ktls_get(KTLS_CLEARTID);
+    int64_t h = ktls_get(KTLS_HANDLE);
+
+    // musl should be calling this only for detached threads, which never use this.
+    assert(!ctid);
+    assert(KERN_IS_HANDLE_VALID(h));
+
+    // Unmap stack and then exit thread without touching stack.
+    // See SYS_exit for a comment on asm mess.
+    register int64_t r_h __asm("a0") = h;
+    register void *r_p __asm("a1") = p;
+    register size_t r_s __asm("a2") = s;
+    __asm volatile("mv s0, a0\n"            // copy to a syscall-saved register
+                   "li a7, %[munmap_fn]\n"
+                   "ecall\n"                // unmap stack
+                   "li a7, %[close_fn]\n"
+                   "mv a0, s0\n"
+                   "ecall\n"                // exit this thread
+                   "1:\n"
+                   "li a7, %[stop_fn]\n"
+                   "ecall\n"                // unreachable
+                   "j 1b\n"
+                   :
+                   : [h] "r" (r_h),
+                     "r" (r_p),
+                     "r" (r_s),
+                     [munmap_fn] "i" (KERN_FN_MUNMAP),
+                     [close_fn] "i" (KERN_FN_CLOSE),
+                     [stop_fn] "i" (KERN_FN_DEBUG_STOP)
+                   : "memory");
+    while(1);
+
+}
+
 long __emu_SYS_exit_group_1(long a)
 {
-    __panic_ni();
+    // There's no exit syscall, so we can only deal with 1 thread.
+    if (a_fetch_add(&libc.threads_minus_1, 0))
+        __panic_ni();
+
+    int64_t h = ktls_get(KTLS_HANDLE);
+    assert(KERN_IS_HANDLE_VALID(h));
+    kern_close(h);
+    __panic("unreachable\n");
+}
+
+long __emu_SYS_fork_0(void)
+{
+    int64_t hfork = kern_thread_create(KERN_HANDLE_INVALID, true);
+    if (!KERN_IS_HANDLE_VALID(hfork))
+        return -EAGAIN;
+
+    // New process needs at least the new thread handle, as the musl-emu
+    // currently uses that for locks and to terminate threads.
+    int64_t new_hself = kern_copy_handle(hfork, hfork);
+    if (!KERN_IS_HANDLE_VALID(new_hself)) {
+        kern_close(hfork);
+        return -EAGAIN;
+    }
+
+    int t = kern_copy_aspace(KERN_HANDLE_INVALID, hfork, true);
+    if (t < 0) {
+        kern_close(hfork);
+        return -EAGAIN;
+    }
+
+    if (t == 1) {
+        // The forked "child". Need to update the musl TIDs.
+        ktls_set(new_hself, KTLS_HANDLE, new_hself);
+        pthread_t self = __pthread_self();
+        self->tid = new_hself;
+        return 0;
+    } else {
+        // The parent. Currently, there are no PIDs. Should we just return the
+        // child handle? Thanks to our dumb refcounting idea for thread handles,
+        // this would make the child unable to stop execution, so just return
+        // a dummy value until there is a proper concept for thread/process
+        // management.
+        kern_close(hfork);
+        return 2; // dummy PID
+    }
+}
+
+long __emu_SYS_gettid_0(void)
+{
+    // TODO: musl uses this as "owner" field for mutexes and such. This doesn't
+    //       work for process shared mutexes, because thread handles are
+    //       process local.
+    return ktls_get(KTLS_HANDLE);
 }
 
 // Emulate ridiculous backwards Linux garbage (what the fuck were they smoking?).
@@ -393,21 +474,27 @@ int __clone(int (*ep)(void *), void *stack, int flags, void *arg, ...)
     regs.regs[10] = (uintptr_t)arg;
     regs.pc = (uintptr_t)ep;
 
-    int64_t h = kern_thread_create(__self_handle, false);
+    int64_t h = kern_thread_create(KERN_HANDLE_INVALID, false);
     if (!KERN_IS_HANDLE_VALID(h))
         return -EAGAIN; // out of resources
 
+    ktls_set(h, KTLS_HANDLE, h);
+
     if (ptid)
-        *ptid = h; // maybe?
+        *ptid = h; // same as gettid()
 
     if (ctid)
         ktls_set(h, KTLS_CLEARTID, (uintptr_t)ctid);
 
-    ktls_set(h, KTLS_HANDLE, h);
 
     // This "starts" the thread.
     if (kern_thread_set_context(h, &regs) < 0)
         return -EINVAL;
 
     return 0;
+}
+
+void __emu_init(int64_t self_handle)
+{
+    ktls_set(self_handle, KTLS_HANDLE, self_handle);
 }

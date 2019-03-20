@@ -11,12 +11,12 @@ _Noreturn int __libc_start_main(int (*)(), int, char **,
 #include <elf.h>
 #include <stdint.h>
 
-int64_t __self_handle;
+void __emu_init(int64_t self_handle);
 
 // Uses argument registers as setup by the creator, in this case the kernel.
 void crt_init(int64_t self_handle)
 {
-    __self_handle = self_handle;
+    __emu_init(self_handle);
 
     // Build Linux-compatible stack, as expected by musl.
     uintptr_t info[64];

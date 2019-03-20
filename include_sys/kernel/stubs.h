@@ -103,6 +103,11 @@ static inline int kern_close(int64_t handle)
     return kern_call1(KERN_FN_CLOSE, handle);
 }
 
+static inline int64_t kern_copy_handle(int64_t dst_handle, int64_t handle)
+{
+    return kern_call2(KERN_FN_COPY_HANDLE, dst_handle, handle);
+}
+
 static inline void kern_yield(void)
 {
     kern_call0(KERN_FN_YIELD);

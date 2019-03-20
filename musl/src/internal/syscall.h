@@ -45,8 +45,10 @@ long __emu_SYS_rt_sigprocmask_4(long a, const void *b, void *c, long d);
 long __emu_SYS_nanosleep_2(const struct timespec *a, struct timespec *b);
 long __emu_SYS_clock_gettime_2(long a, struct timespec *b);
 long __emu_SYS_gettimeofday_2(void *a, void *b);
+long __emu_SYS_fork_0(void);
+long __emu_SYS_gettid_0(void);
 
-#define __syscall0(n) __emu_ ## n ## _0
+#define __syscall0(n) __emu_ ## n ## _0 ()
 #define __syscall1(n, a1) __emu_ ## n ## _1 (a1)
 #define __syscall2(n, a1, a2) __emu_ ## n ## _2 (a1, a2)
 #define __syscall3(n, a1, a2, a3) __emu_ ## n ## _3 (a1, a2, a3)

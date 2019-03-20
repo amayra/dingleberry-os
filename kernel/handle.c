@@ -21,7 +21,7 @@ static_assert(PAGE_SIZE / sizeof(struct handle) *
 #define HANDLES_ALLOCATED_SIZE (HANDLE_TABLE[0].u.invalid.allocated_size)
 static_assert(KERN_HANDLE_INVALID < 1, "");
 
-static const struct handle_vtable *handle_vtable[HANDLE_TYPE_COUNT] = {
+const struct handle_vtable *handle_vtable[HANDLE_TYPE_COUNT] = {
     [HANDLE_TYPE_THREAD] = &handle_thread,
 };
 
@@ -205,6 +205,7 @@ int64_t handle_add_or_free_on(struct mmu *mmu, struct handle *val)
     struct handle *new = handle_alloc_on(mmu);
     if (!new || !handle_vtable[val->type]->ref(new, val)) {
         handle_vtable[val->type]->unref(val);
+        handle_free_on(mmu, new);
         return KERN_HANDLE_INVALID;
     }
     handle_dump_all();

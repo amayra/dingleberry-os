@@ -132,10 +132,14 @@ static void boss_wake(void)
 
 static void thread_destroy(struct thread *t)
 {
+    printf("disposing of thread %p\n", t);
+
     assert(t->state == THREAD_STATE_DEAD);
     assert(t->refcount == 0); // handles still referencing it?
     assert(thread_current() != t);
-    assert(t->aspace == NULL);
+
+    // Unref/destroy associated aspace.
+    thread_set_aspace(t, NULL);
 
     uintptr_t iaddr = (uintptr_t)t;
     assert(iaddr >= thread_aspace_base);
@@ -407,8 +411,6 @@ void thread_set_state(struct thread *t, enum thread_state state)
         // Handles still referencing it? If it should be possible that threads
         // can be dead while still referenced, another state would be needed.
         assert(t->refcount == 0);
-        // Destroy associated aspace.
-        thread_set_aspace(t, NULL);
         // Let boss_thread actually destroy threads. Required if t is the
         // current thread.
         LL_APPEND(&deathrow_threads, t, st_siblings);

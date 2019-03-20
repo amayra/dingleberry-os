@@ -212,6 +212,30 @@ static int syscall_close(int64_t handle)
     return 0;
 }
 
+static int64_t syscall_copy_handle(int64_t dst_handle, int64_t handle)
+{
+    struct thread *dst = lookup_thread(dst_handle);
+    struct handle *h = handle_lookup(handle);
+    if (!dst || !h)
+        return -1; // bad handle
+
+    // Since we switch address spaces, we can't access both handles at the same
+    // time. Note that this cause trouble with non-trivial handle_vtable.ref
+    // calls, so I'm sure this will fuck over soon enough.
+    struct handle h_copy = *h;
+
+    struct mmu *mmu = thread_get_mmu(dst);
+    mmu_switch_to(mmu);
+    struct handle *new = handle_alloc_on(mmu);
+    if (!handle_vtable[h_copy.type]->ref(new, &h_copy)) {
+        handle_free_on(mmu, new);
+        new = NULL;
+    }
+    mmu_switch_to(thread_get_mmu(thread_current()));
+
+    return handle_get_id(new);
+}
+
 static bool get_futex_addr(uintptr_t uaddr, struct phys_page **page, int *offset)
 {
     struct mmu *mmu = thread_get_mmu(thread_current());
@@ -321,6 +345,7 @@ const struct syscall_entry syscall_table[] = {
     [KERN_FN_YIELD]                 = {1, syscall_yield},
     [KERN_FN_TLS]                   = {1, syscall_tls},
     [KERN_FN_MUNMAP]                = {1, syscall_munmap},
+    [KERN_FN_COPY_HANDLE]           = {1, syscall_copy_handle},
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };

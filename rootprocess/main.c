@@ -1,15 +1,14 @@
 #include <assert.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <kernel/api.h>
 #include <kernel/stubs.h>
-
-int64_t g_self_handle;
 
 int foo[4097];
 int foo2[4097]={1};
@@ -40,7 +39,7 @@ void thread_cr(int num)
 
     printf("stack: %p-%p\n", stack, (void *)regs.regs[2]);
 
-    int64_t h = kern_thread_create(g_self_handle, false);
+    int64_t h = kern_thread_create(KERN_HANDLE_INVALID, false);
     assert(KERN_IS_HANDLE_VALID(h));
 
     int r = kern_thread_set_context(h, &regs);
@@ -71,6 +70,29 @@ static void *musl_thread(void *a)
         //kern_yield();
     }
     return (void *)45678;
+}
+
+static void *detached_thread(void *a)
+{
+    printf("detaching and exiting\n");
+    pthread_detach(pthread_self());
+    return NULL;
+}
+
+static void *cont_thread(void *a)
+{
+    struct timespec ts = {.tv_sec = 1};
+    nanosleep(&ts, &ts);
+    printf("hello from %s\n", __PRETTY_FUNCTION__);
+    int rf = fork();
+    assert(rf >= 0);
+    if (rf > 0) {
+        printf("hello from a forked process, exiting immediately.\n");
+        pthread_exit(NULL);
+    }
+    printf("meh.\n");
+    while(1);
+    return NULL;
 }
 
 int main(void)
@@ -122,6 +144,21 @@ int main(void)
 
     printf("pthread_join => %d %p\n", r, ret);
 
+    r = pthread_create(&res, NULL, detached_thread, NULL);
+    assert(r == 0);
+
+    printf("waiting for detached thread...\n");
+    struct timespec pts = {.tv_sec = 1};
+    nanosleep(&pts, &pts);
+    printf("thread should have gone away.\n");
+
+    r = pthread_create(&res, NULL, cont_thread, NULL);
+    assert(r == 0);
+
+    // The main thread is slightly special. Also, this doesn't free the
+    // stack... because it's impossible on Linux.
+    pthread_exit(NULL);
+
     while(1);
 
     thread_cr(2);
@@ -129,9 +166,9 @@ int main(void)
 
     printf("before: %d\n", dataseg);
 
-    int64_t hfork = kern_thread_create(g_self_handle, true);
+    int64_t hfork = kern_thread_create(KERN_HANDLE_INVALID, true);
     assert(KERN_IS_HANDLE_VALID(hfork));
-    int t = kern_copy_aspace(g_self_handle, hfork, true);
+    int t = kern_copy_aspace(KERN_HANDLE_INVALID, hfork, true);
     printf("----- fork: %d, %ld\n", t, (long)hfork);
     assert(t >= 0);
 
