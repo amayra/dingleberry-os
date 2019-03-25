@@ -53,7 +53,7 @@ $(BUILD)/asm_offsets.s: asm_offsets.c
 	$(CC) $(CFLAGS) -c -S -o $@ $<
 
 $(BUILD)/asm_offsets.h: $(BUILD)/asm_offsets.s
-	gawk -F '|' '{if($$1 ~ /[ \t]+O></){ sub(/struct /, "", $$2); $$2 = toupper($$2) ; print "#define "$$2" "$$3}}' < $< > $@
+	gawk -F '|' '{if($$1 ~ /[ \t]+O></){ sub(/struct /, "", $$2); gsub(/\./, "_", $$2); $$2 = toupper($$2) ; print "#define "$$2" "$$3}}' < $< > $@
 
 $(BUILD)/kernel.elf: $(BUILD_OBJECTS) $(BUILD)/kernel.ld
 	$(LD) $(LDFLAGS) -o $@ --start-group $(BUILD_OBJECTS) --end-group

@@ -324,28 +324,42 @@ static size_t syscall_tls(int64_t handle, int op, unsigned index, size_t val)
     return (size_t)-1; // unknown OP
 }
 
-// All of the following offsets/sizes are hardcoded in ASM.
+static int64_t syscall_memobj_create(void)
+{
+    return -1;
+}
 
-struct syscall_entry {
-    size_t num_return_values;
-    const void *entrypoint;
-};
+static int64_t syscall_ipc_listener_create(void)
+{
+    return -1;
+}
 
-const struct syscall_entry syscall_table[] = {
-    [KERN_FN_GET_TIME]              = {1, syscall_get_time},
-    [KERN_FN_DEBUG_WRITE_CHAR]      = {0, syscall_debug_write_char},
-    [KERN_FN_DEBUG_STOP]            = {0, syscall_debug_stop},
-    [KERN_FN_THREAD_CREATE]         = {1, syscall_thread_create},
-    [KERN_FN_THREAD_SET_CONTEXT]    = {1, syscall_thread_set_context},
-    [KERN_FN_MMAP]                  = {1, syscall_mmap},
-    [KERN_FN_MPROTECT]              = {1, syscall_mprotect},
-    [KERN_FN_COPY_ASPACE]           = {1, syscall_copy_aspace},
-    [KERN_FN_CLOSE]                 = {1, syscall_close},
-    [KERN_FN_FUTEX]                 = {1, syscall_futex},
-    [KERN_FN_YIELD]                 = {1, syscall_yield},
-    [KERN_FN_TLS]                   = {1, syscall_tls},
-    [KERN_FN_MUNMAP]                = {1, syscall_munmap},
-    [KERN_FN_COPY_HANDLE]           = {1, syscall_copy_handle},
+static int64_t syscall_ipc_target_create(void)
+{
+    return -1;
+}
+
+// This array is used in ASM.
+const void *const syscall_table[] = {
+    // The IPC syscall is dispatched separately in asm.
+    [KERN_FN_IPC]                   = syscall_unavailable,
+    [KERN_FN_IPC_LISTENER_CREATE]   = syscall_ipc_listener_create,
+    [KERN_FN_IPC_TARGET_CREATE]     = syscall_ipc_target_create,
+    [KERN_FN_MEMOBJ_CREATE]         = syscall_memobj_create,
+    [KERN_FN_GET_TIME]              = syscall_get_time,
+    [KERN_FN_DEBUG_WRITE_CHAR]      = syscall_debug_write_char,
+    [KERN_FN_DEBUG_STOP]            = syscall_debug_stop,
+    [KERN_FN_THREAD_CREATE]         = syscall_thread_create,
+    [KERN_FN_THREAD_SET_CONTEXT]    = syscall_thread_set_context,
+    [KERN_FN_MMAP]                  = syscall_mmap,
+    [KERN_FN_MPROTECT]              = syscall_mprotect,
+    [KERN_FN_COPY_ASPACE]           = syscall_copy_aspace,
+    [KERN_FN_CLOSE]                 = syscall_close,
+    [KERN_FN_FUTEX]                 = syscall_futex,
+    [KERN_FN_YIELD]                 = syscall_yield,
+    [KERN_FN_TLS]                   = syscall_tls,
+    [KERN_FN_MUNMAP]                = syscall_munmap,
+    [KERN_FN_COPY_HANDLE]           = syscall_copy_handle,
     // Update SYSCALL_COUNT if you add or remove an entry.
     // Also make sure all entrypoint fields are non-NULL.
 };
@@ -355,7 +369,7 @@ static_assert(ARRAY_ELEMS(syscall_table) == SYSCALL_COUNT, "");
 void syscalls_self_check(void)
 {
     for (size_t n = 0; n < ARRAY_ELEMS(syscall_table); n++) {
-        if (!syscall_table[n].entrypoint)
+        if (!syscall_table[n])
             panic("Missing syscall entry %zu.\n", n);
     }
 }

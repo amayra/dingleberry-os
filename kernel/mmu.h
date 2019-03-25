@@ -39,6 +39,10 @@ void mmu_free(struct mmu *mmu);
 // reflected in the userspace mmu instances.
 struct mmu *mmu_get_kernel(void);
 
+// Return a pointer to mmu.satp, which contains the satp CSR contents, as it
+// should be written on address space switch. Used for micro-optimizations.
+uint64_t *mmu_get_satp_ptr(struct mmu *mmu);
+
 // Establish a virtual memory mapping for address virt in mmu. virt will
 // map to the physical address phys.
 // The address must be in the suitable range for the mmu, i.e. using a user

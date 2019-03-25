@@ -13,11 +13,6 @@
 static_assert(PAGE_SIZE / sizeof(struct handle) *
               sizeof(struct handle) == PAGE_SIZE, "");
 
-#define HANDLE_TABLE ((struct handle *)HANDLE_TABLE_BASE)
-#define MAX_HANDLES (HANDLE_TABLE_SIZE / sizeof(struct handle))
-
-// Handle 0 is reserved for the freelist.
-#define HANDLES_FREE_LIST (HANDLE_TABLE[0].u.invalid.next)
 #define HANDLES_ALLOCATED_SIZE (HANDLE_TABLE[0].u.invalid.allocated_size)
 static_assert(KERN_HANDLE_INVALID < 1, "");
 

@@ -74,21 +74,20 @@ trap:
     csrrw sp, sscratch, tp
     sd sp, (THREAD_SCRATCH_TP)(tp)
 
-    /* Entering from kernel mode? */
-    csrr sp, sstatus
-    andi sp, sp, (1 << 8) /* SPP */
-    bnez sp, kernel_trap
-
     /* Check whether this is a syscall (scause == 8). If it's an exception or
      * IRQ, use the generic trap handler. Do this because we want to PREMATURELY
      * OPTIMIZE the syscall entry path. It would be simpler to always use the
-     * full path. */
+     * full path.
+     * Also assume scause == 8 happens only in user mode.
+     */
     csrr sp, scause
     addi sp, sp, -8
-    bnez sp, user_trap
+    bnez sp, slow_trap
+
+    /* Setup kernel stack. */
+    mv sp, tp
 
     /* Save the normal syscall-saved registers. */
-    sd ra, (THREAD_SYSCALL_RA)(tp)
     sd gp, (THREAD_SYSCALL_GP)(tp)
     /* (sp/tp need to be awkwardly retrieved from above. Sure would be nice
      * to have 2 more sscratch regs, or different trap vectors, etc.) */
@@ -106,40 +105,214 @@ trap:
     addi ra, ra, 4
     sd ra, (THREAD_SYSCALL_PC)(tp)
 
-    /* Setup kernel stack. */
-    mv sp, tp
-
 .option push
 .option norelax
     lla gp, __global_pointer$
 .option pop
 
+    /* Syscall 0, IPC, is special: different ABI, asm fast path. */
+    bnez a7, normal_syscall
+
+    /* Check for special send flags. Currently, fast-path does register-only
+     * transfer, so all fields must be 0. */
+    bnez t3, ipc_slow_path
+
+    /* Save source thread IPC receive parameters. If we don't take the fast
+     * path, this is simply a dead store. */
+    sd t3, (THREAD_IPC_RECEIVE_EXT_INF)(tp)
+    sd t4, (THREAD_IPC_RECEIVE_EXT_PTR)(tp)
+
+    /* Check t0 handle for type. */
+    /* Check overflow and compute handle address. */
+    srli s0, t0, MAX_HANDLES_LOG
+    bnez s0, ipc_slow_path
+    slli s0, t0, HANDLE_SIZE_LOG
+    li s11, HANDLE_TABLE
+    add s0, s0, s11
+    /* Access handle (the handle table is sparse and can cause page faults). */
+exc_ah_1_s:
+    lbu s1, (HANDLE_TYPE)(s0)
+exc_ah_1_e:
+    /* Look what it is. */
+    li s2, HANDLE_TYPE_IPC_TARGET
+    beq s1, s2, ipc_send_wait
+    li s2, HANDLE_TYPE_IPC_REPLY
+    bne s1, s2, ipc_slow_path
+
+ipc_reply_listen:
+    /* s0: reply port handle struct
+       s11: handle table */
+    /* Check t1 handle for type. */
+    srli s1, t1, MAX_HANDLES_LOG
+    bnez s1, ipc_slow_path
+    slli s1, t1, HANDLE_SIZE_LOG
+    add s1, s1, s11
+    /* Access handle. */
+exc_ah_2_s:
+    lbu s2, (HANDLE_TYPE)(s1)
+exc_ah_2_e:
+    /* Look what it is. */
+    li s3, HANDLE_TYPE_IPC_LISTENER
+    bne s2, s3, ipc_slow_path
+    /* At this point, it really looks like a reply/listen call. */
+    /* Load pointer to ipc_listener. */
+    ld s6, (HANDLE_U_IPC_TARGET_LISTENER)(s1)
+    /* Load ipc_listener.waiters; if it's not-NULL, use slow path. */
+    ld s3, (IPC_LISTENER_WAITERS)(s6)
+    bnez s3, ipc_slow_path
+    /* Look for the reply-to thread; if it's dead, use slow path. */
+    ld s3, (HANDLE_U_IPC_REPLY_CALLER)(s1)
+    beqz s3, ipc_slow_path
+    /* Now we know the IPC operation will succeed in all cases. */
+    /* Free the reply handle. */
+    sb zero, (HANDLE_TYPE)(s2) /* HANDLE_TYPE_INVALID */
+    ld s4, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
+    beqz s4, 1f
+    /* Free it fully. */
+    ld s4, (HANDLE_U_INVALID_NEXT)(s11) /* s11: HANDLE_TABLE */
+    sd s4, (HANDLE_U_INVALID_NEXT)(s2)
+    sd s2, (HANDLE_U_INVALID_NEXT)(s11)
+    j 2f
+1:
+    /* Store it for the next receive operation. */
+    sd s2, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
+2:
+    /* Put source thread into listener list. */
+    ld s4, (IPC_LISTENER_LISTENERS)(s6)
+    sd tp, (IPC_LISTENER_LISTENERS)(s6)
+    sd s4, (THREAD_IPC_LIST)(tp)
+    /* Change source thread state to waiting for IPC. */
+    li s5, THREAD_STATE_WAIT_IPC_LISTEN
+    sw s5, (THREAD_STATE)(tp)
+    /* Change target thread state to running. */
+    li s5, THREAD_STATE_FINE
+    sw s5, (THREAD_STATE)(s3)
+    /* Save context for sender thread. */
+    la s5, ipc_receive_slowpath
+    sd s5, (THREAD_KERNEL_PC)(tp)
+    sd sp, (THREAD_KERNEL_SP)(tp)
+    /* Since we use fast path, target pc is just discarded. The invariant for
+     * the THREAD_STATE_WAIT_IPC_LISTEN state allows this. */
+    ld sp, (THREAD_KERNEL_SP)(s3)
+    /* Actual context switch. */
+    mv tp, s3
+    /* Fill receive registers. */
+    mv t0, zero /* clobbered */
+    mv t1, zero /* same */
+    mv t3, zero /* receive flags all 0 due to fastpath */
+    j ipc_receive_fastpath
+
+ipc_send_wait:
+    /* s0: target port handle struct
+       s11: handle table */
+    /* Check for proper blocking send/wait call. */
+    bne t0, t1, ipc_slow_path
+    /* At this point, it really looks like a send/wait call. */
+    /* Load pointer to ipc_listener. */
+    ld s1, (HANDLE_U_IPC_TARGET_LISTENER)(s0)
+    /* Also the user_data, for later. */
+    ld s6, (HANDLE_U_IPC_TARGET_USER_DATA)(s0)
+    /* Load ipc_listener.listeners; if it's NULL, use slow path. */
+    ld s3, (IPC_LISTENER_LISTENERS)(s1)
+    beqz s3, ipc_slow_path
+    /* "Allocate" reply handle held by listener thread. This also avoids having
+     * to access the target thread handle table, which would have to happen
+     * after address space switch, which would make handling allocation failure
+     * slightly more messy. */
+    ld s4, (THREAD_IPC_FREE_REPLY_HANDLE)(s3)
+    beqz s4, ipc_slow_path
+    /* Now we know the IPC operation will succeed in all cases. */
+    /* We're going to use the reply handle. */
+    sd zero, (THREAD_IPC_FREE_REPLY_HANDLE)(s3)
+    /* Switch address space. */
+    call ipc_switch_aspace
+    /* Initialize reply handle. */
+    li s5, HANDLE_TYPE_IPC_REPLY
+    sb s5, (HANDLE_TYPE)(s4)
+    sd tp, (HANDLE_U_IPC_REPLY_CALLER)(s4)
+    /* Unlink target thread from ipc_listener */
+    ld s5, (THREAD_IPC_LIST)(s3)
+    sd s5, (IPC_LISTENER_LISTENERS)(s1)
+    /* Change source thread state to waiting for reply. */
+    li s5, THREAD_STATE_WAIT_IPC_REPLY
+    sw s5, (THREAD_STATE)(tp)
+    /* Change target thread state to running. */
+    li s5, THREAD_STATE_FINE
+    sw s5, (THREAD_STATE)(s3)
+    /* Save context for sender thread. */
+    la s5, ipc_receive_slowpath
+    sd s5, (THREAD_KERNEL_PC)(tp)
+    sd sp, (THREAD_KERNEL_SP)(tp)
+    /* Since we use fast path, target pc is just discarded. The invariant for
+     * the THREAD_STATE_WAIT_IPC_LISTEN state allows this. */
+    ld sp, (THREAD_KERNEL_SP)(s3)
+    /* Actual context switch. */
+    mv tp, s3
+    /* Fill receive registers. */
+    mv t1, s6 /* user_data */
+    mv t3, zero /* receive flags all 0 due to fastpath */
+    /* Turn reply handle pointer to index handle. */
+    sub s4, s4, s11
+    srli t0, s4, HANDLE_SIZE_LOG
+    j ipc_receive_fastpath
+
+    /* Change address space from tp to the thread in s3. There are various
+     * complications such as avoiding flushing TLBs when ASIDs are used, or
+     * managing ASIDs in the first place.
+     * This function cobbers at most s8-s10. */
+ipc_switch_aspace:
+    ld s4, (THREAD_MMU_SATP)(tp)
+    ld s5, (THREAD_MMU_SATP)(s3)
+    beq s4, s5, 1f
+    /* But for now, always flush TLBs. */
+    csrw satp, s5
+    sfence.vma zero, zero
+1:
+    ret
+
+    /* Call slow path C code for arbitrary IPC. */
+ipc_slow_path:
+    /*...*/
+    call abort
+
+    /* Context switch target if C code switches to a receiving thread. */
+ipc_receive_slowpath:
+    /* ... */
+    call abort
+
+    /* This basically just returns, similar to syscall return, but without
+     *
+     */
+ipc_receive_fastpath:
+    /* Prevent information leakage through unused registers.
+     *  a0-a6: used to transfer user data
+     *  a7: return status code
+     *  t0, t1, t3: specific IPC return values
+     *  ra: handled by return code */
+    mv t2, zero
+    mv t4, zero
+    mv t5, zero
+    mv t6, zero
+    li a7, 1 /* success; IPC received */
+    j return_to_user
+
+normal_syscall:
     /* Dispatch the syscall. */
-    li t0, SYSCALL_COUNT
-    bltu a7, t0, 1f
-    li t1, 1
-    la t0, syscall_unavailable
+    li s0, SYSCALL_COUNT
+    bltu a7, s0, 1f
+    li s1, 1
+    la s0, syscall_unavailable
     mv a0, a7
     j 2f
 1:
-    slli a7, a7, 4
-    la t0, syscall_table
-    add t0, t0, a7
-    ld t1, 0(t0) /* number of return values */
-    ld t0, 8(t0) /* function pointer */
+    slli a7, a7, 3
+    la s0, syscall_table
+    add s0, s0, a7
+    ld s0, 0(s0)
 2:
-    la ra, 1f
-    slli t1, t1, 2
-    add ra, ra, t1
-    jr t0
-    /* Zero unsaved registers to avoid leaking kernel information, except
-     * registers used for return values.
-     * We awkwardly "index" the actual jump target from the number of return
-     * values from the syscall_table, so force a fixed instruction size. */
-1:
-    .option push
-    .option norvc
-    mv a0, zero
+    jalr s0
+
+    /* Zero clobbered/unsaved registers to avoid leaking kernel information. */
     mv a1, zero
     mv a2, zero
     mv a3, zero
@@ -147,24 +320,6 @@ trap:
     mv a5, zero
     mv a6, zero
     mv a7, zero
-    .option pop
-
-    mv t0, tp
-
-    ld ra, (THREAD_SYSCALL_RA)(t0)
-    ld sp, (THREAD_SYSCALL_SP)(t0)
-    ld gp, (THREAD_SYSCALL_GP)(t0)
-    ld tp, (THREAD_SYSCALL_TP)(t0)
-
-    CALLEE_SAVED_LS(ld, THREAD_SYSCALL_CS, t0)
-
-    ld t1, (THREAD_SYSCALL_SSTATUS)(t0)
-    csrw sstatus, t1
-
-    ld t1, (THREAD_SYSCALL_PC)(t0)
-    csrw sepc, t1
-
-    /* Zero more unsaved registers clobbered by C ABI kernel calls. */
     mv t0, zero
     mv t1, zero
     mv t2, zero
@@ -173,13 +328,33 @@ trap:
     mv t5, zero
     mv t6, zero
 
+return_to_user:
+    ld ra, (THREAD_SYSCALL_SSTATUS)(tp)
+    csrw sstatus, ra
+
+    ld ra, (THREAD_SYSCALL_PC)(tp)
+    csrw sepc, ra
+
+    CALLEE_SAVED_LS(ld, THREAD_SYSCALL_CS, tp)
+
+    ld sp, (THREAD_SYSCALL_SP)(tp)
+    ld gp, (THREAD_SYSCALL_GP)(tp)
+    ld tp, (THREAD_SYSCALL_TP)(tp)
+
+    mv ra, zero
+
     sret
 
-    /* NB: the kernel_trap and user_trap should be put at a lower address
+    /* NB: the slow_trap code should be put at a lower address
      *     relative to trap, for branch prediction reasons. */
 
     /* Fallback "slowpath" for user exceptions and IRQs. */
-user_trap:
+slow_trap:
+    /* Entering from kernel mode? */
+    csrr sp, sstatus
+    andi sp, sp, (1 << 8) /* SPP */
+    bnez sp, kernel_trap
+
     /* Setup kernel stack. */
     mv sp, tp
     j generic_trap
@@ -353,3 +528,32 @@ run_with_trap_asm:
 emergency_trap_stack:
     .skip PAGE_SIZE
 emergency_trap_stack_end:
+
+.section .rodata
+
+    /* This is a table with exception handlers. This follows this struct:
+     *
+     *  struct asm_exception_entry {
+     *      void *code_start;
+     *      void *code_end;
+     *      void *code_target;
+     *      size_t type;
+     *  }
+     *
+     * The type field is a bitfield of ASM_EXCEPTION_TYPE_* values. When an
+     * exception happens in [code_start, code_end), and there is a matching type
+     * bit, the kernel will jump to code_target, and resume execution.
+     *
+     * Note that this works for ASM code only, since there is not stack rollback
+     * or register restoring.
+     */
+#define EXCEPTION_ENTRY(s, e, h, t) \
+    .dword (s), (e), (h), (t)
+#define EXCEPTION_KLOAD(s, e, h) \
+    EXCEPTION_ENTRY(s, e, h, ASM_EXCEPTION_TYPE_KERNEL_LOAD)
+.balign 8
+asm_exception_table:
+    EXCEPTION_KLOAD(exc_ah_1_s, exc_ah_1_e, ipc_slow_path)
+    EXCEPTION_KLOAD(exc_ah_2_s, exc_ah_2_e, ipc_slow_path)
+    /* Termination. */
+    EXCEPTION_ENTRY(0, 0, 0, 0)

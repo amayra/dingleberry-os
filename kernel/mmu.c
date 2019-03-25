@@ -17,6 +17,7 @@ enum {
 };
 
 struct mmu {
+    uint64_t satp;
     bool is_kernel;
     uint64_t root_pt;
 
@@ -503,11 +504,14 @@ void mmu_rmap_unmap(uint64_t phys)
     }
 }
 
+uint64_t *mmu_get_satp_ptr(struct mmu *mmu)
+{
+    return &mmu->satp;
+}
+
 void mmu_switch_to(struct mmu *mmu)
 {
-    // Mode 9 = Sv48.
-    uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(mmu->root_pt);
-    asm volatile("csrw satp, %0" : : "r" (satp) : "memory");
+    asm volatile("csrw satp, %0" : : "r" (mmu->satp) : "memory");
     flush_tlb_all();
 }
 
@@ -515,8 +519,7 @@ void mmu_assert_current(struct mmu *mmu, const char *file, int line, bool inv)
 {
     uint64_t satp_reg;
     asm volatile("csrr %0, satp" : "=r" (satp_reg));
-    uint64_t satp = (9ULL << 60) | PPN_FROM_PHYS(mmu->root_pt);
-    if ((satp != satp_reg) ^ inv) {
+    if ((mmu->satp != satp_reg) ^ inv) {
         __assert_fail(inv ? "csr.satp != mmu.satp" : "csr.satp == mmu.satp",
                       file, line, "?");
     }
@@ -600,6 +603,9 @@ struct mmu *mmu_alloc(void)
         slob_free(&mmu_slob, mmu);
         return NULL;
     }
+
+    // Mode 9 = Sv48.
+    mmu->satp = (9ULL << 60) | PPN_FROM_PHYS(mmu->root_pt);
 
     if (kernel_mmu) {
         sync_with_kernel_mmu(mmu);

@@ -236,6 +236,7 @@ void thread_set_aspace(struct thread *t, struct vm_aspace *aspace)
 
     t->aspace = aspace;
     t->mmu = aspace ? vm_aspace_get_mmu(aspace) : mmu_get_kernel();
+    t->mmu_satp = mmu_get_satp_ptr(t->mmu);
 }
 
 struct vm_aspace *thread_get_aspace(struct thread *t)
@@ -744,7 +745,6 @@ void thread_fill_syscall_saved_regs(struct thread *t, struct asm_regs *regs)
 {
     *regs = (struct asm_regs){
         .regs = {
-            [1] = t->syscall_ra,
             [2] = t->syscall_sp,
             [3] = t->syscall_gp,
             [4] = t->syscall_tp,

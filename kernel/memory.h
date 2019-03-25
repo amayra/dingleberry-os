@@ -54,7 +54,8 @@
 
 // Return page size on a specific level. Level 0 is the top-level, and
 // MMU_PAGE_SIZE(MMU_NUM_LEVELS - 1) == PAGE_SIZE.
-#define MMU_PAGE_SIZE(level)    (ULL(1) << MMU_PTE_BITPOS(level))
+#define MMU_PAGE_SIZE_LOG(level) MMU_PTE_BITPOS(level)
+#define MMU_PAGE_SIZE(level)    (ULL(1) << MMU_PAGE_SIZE_LOG(level))
 
 // Start of the kernel space address space. We follow the traditional way of
 // splitting the address space into a low user space and a high kernel space
@@ -79,11 +80,13 @@
 // boundaries. mmu_ functions require the userspace mmu handle as parameter,
 // with the MMU_FLAG_PS flag set.
 #define KERNEL_PS_BASE          (KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE)
-#define KERNEL_PS_SIZE          MMU_PAGE_SIZE(0)
+#define KERNEL_PS_SIZE_LOG      MMU_PAGE_SIZE_LOG(0)
+#define KERNEL_PS_SIZE          (ULL(1) << KERNEL_PS_SIZE_LOG)
 #define KERNEL_PS_END           (KERNEL_PS_BASE + KERNEL_PS_SIZE)
 // (it's all used by the handle table)
 #define HANDLE_TABLE_BASE       KERNEL_PS_BASE
-#define HANDLE_TABLE_SIZE       KERNEL_PS_SIZE
+#define HANDLE_TABLE_SIZE_LOG   KERNEL_PS_SIZE_LOG
+#define HANDLE_TABLE_SIZE       (ULL(1) << HANDLE_TABLE_SIZE_LOG)
 
 // Misc. kernel virtual memory until end of address space; managed at runtime.
 #define VIRT_ALLOC_BASE         KERNEL_PS_END

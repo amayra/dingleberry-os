@@ -36,7 +36,7 @@ static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
           "r"  (r_a6),
           "r"  (r_a7)
         // Clobber all other non-callee-saved/immutable registers.
-        : "t0", "t1", "t2", "t3", "t4", "t5", "t6", "memory");
+        : "ra", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "memory");
     return r_a0;
 }
 

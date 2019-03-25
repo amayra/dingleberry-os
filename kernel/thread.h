@@ -38,6 +38,29 @@ enum thread_state {
     THREAD_STATE_RUNNABLE,      // currently waiting to be scheduled
     THREAD_STATE_WAIT_FUTEX,    // waiting on a futex
     THREAD_STATE_WAIT_SLEEP,    // will voluntarily check for new state on wakeup
+    // The thread did a send and is now waiting for a reply.
+    // Invariants:
+    //  - thread.ipc_handle points to a HANDLE_TYPE_IPC_REPLY, that points
+    //    back to the thread
+    //  - thread.ipc_receive_ext_ptr/ipc_receive_ext_inf are set
+    //  - thread can be woken up at ipc_receive_fastpath instead of kernel_pc
+    //  - when thread is woken normally, thread.ipc_info must be set before
+    //  - waker must unlink the reply etc.
+    //  - waker performs transfer (esp. slow path parts)
+    THREAD_STATE_WAIT_IPC_REPLY,
+    // The thread is waiting for incoming IPC.
+    // Invariants:
+    //  - thread is linked into ipc_listener.listeners/thread.ipc_list, and
+    //    thread.ipc_handle points to the HANDLE_TYPE_IPC_LISTENER
+    //  - otherwise same wakeup rules as THREAD_STATE_WAIT_IPC_REPLY (only the
+    //    wait information such as the list it's in is different)
+    THREAD_STATE_WAIT_IPC_LISTEN,
+    // The thread attempted a send, but there was no listener thread.
+    // Invariants:
+    //  - thread is linked into ipc_listener.waiters/thread.ipc_list, and
+    //    thread.ipc_handle points to the HANDLE_TYPE_IPC_TARGET
+    //  - waking up the thread retries the send, goes to sleep again on fail
+    THREAD_STATE_WAIT_IPC_SEND,
     THREAD_STATE_DEAD,          // fucked up
 };
 

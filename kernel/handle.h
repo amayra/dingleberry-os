@@ -1,5 +1,6 @@
 #pragma once
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,10 +18,14 @@
 enum handle_type {
     HANDLE_TYPE_INVALID = 0,
     HANDLE_TYPE_THREAD,
+    HANDLE_TYPE_IPC_TARGET,
+    HANDLE_TYPE_IPC_REPLY,
+    HANDLE_TYPE_IPC_LISTENER,
 
     HANDLE_TYPE_COUNT // not a valid type
 };
 
+// Note: some fields (freelist and IPC handles) are accessed by asm.
 struct handle {
     uint8_t type;
 
@@ -35,10 +40,41 @@ struct handle {
 
         // HANDLE_TYPE_THREAD
         struct thread *thread;
+
+        // HANDLE_TYPE_IPC_LISTENER
+        struct {
+            struct ipc_listener *listener;
+        } ipc_listener;
+
+        // HANDLE_TYPE_IPC_TARGET
+        struct {
+            struct ipc_listener *listener;
+            uintptr_t user_data;
+        } ipc_target;
+
+        // HANDLE_TYPE_IPC_REPLY
+        struct {
+            // Note: the thread is always in THREAD_STATE_WAIT_IPC_REPLY. See
+            //       there for important invariants. One consequence is that
+            //       the reply handle can't be duplicated.
+            struct thread *caller;
+        } ipc_reply;
+
     } u;
 
     size_t pad0;
 };
+
+#define HANDLE_SIZE_LOG 5
+
+static_assert(sizeof(struct handle) == (1 << HANDLE_SIZE_LOG), "");
+
+#define HANDLE_TABLE ((struct handle *)HANDLE_TABLE_BASE)
+#define MAX_HANDLES (HANDLE_TABLE_SIZE / sizeof(struct handle))
+#define MAX_HANDLES_LOG (HANDLE_TABLE_SIZE_LOG - HANDLE_SIZE_LOG)
+
+// Handle 0 is reserved for the freelist.
+#define HANDLES_FREE_LIST (HANDLE_TABLE[0].u.invalid.next)
 
 struct mmu;
 

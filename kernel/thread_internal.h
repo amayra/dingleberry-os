@@ -39,7 +39,6 @@ struct thread {
 
     // Registers saved by syscall trap. (It saves a subset of all registers.)
     // Saved/restored by asm.
-    size_t syscall_ra;
     size_t syscall_sp;
     size_t syscall_gp;
     size_t syscall_tp;
@@ -50,6 +49,25 @@ struct thread {
     // For in-kernel thread switching (asm).
     void *kernel_sp;
     void *kernel_pc;
+
+    // In THREAD_STATE_WAIT_IPC_*, this specifies the handle that is being used.
+    // The handle must always be consistent (e.g. when the handle is closed by
+    // an unrelated syscall, there is enough information to update all threads
+    // waiting on it).
+    int64_t ipc_handle;
+    // User information for receiving (actually, raw t3/t4 contents).
+    size_t ipc_receive_ext_inf;
+    size_t ipc_receive_ext_ptr;
+    // THREAD_STATE_WAIT_IPC_LISTEN / THREAD_STATE_WAIT_IPC_SEND siblings
+    struct thread *ipc_list;
+    // Saved reply handle. Only valid for THREAD_STATE_WAIT_IPC_LISTEN. Avoids
+    // going though alloc/dealloc.
+    struct handle *ipc_free_reply_handle;
+    // Slow path data for IPC.
+    struct ipc_info *ipc_info;
+
+    // See mmu_get_satp_ptr(); used by asm.
+    uint64_t *mmu_satp;
 
     // Trap filtering (primitive exception handling).
     uintptr_t trap_sp;
@@ -101,3 +119,19 @@ struct thread {
     // For KERN_FN_TLS
     size_t user_tls[KERN_TLS_NUM];
 } __attribute__((aligned(STACK_ALIGNMENT)));
+
+enum {
+    ASM_EXCEPTION_TYPE_KERNEL_LOAD  = 1 << 0,
+    ASM_EXCEPTION_TYPE_USER_LOAD    = 2 << 0,
+    ASM_EXCEPTION_TYPE_USER_STORE   = 2 << 0,
+};
+
+// Layout and size hardcoded in ASM.
+struct asm_exception_entry {
+    void *code_start;
+    void *code_end;
+    void *code_target;
+    size_t type;
+};
+
+extern const struct asm_exception_entry asm_exception_table[];
