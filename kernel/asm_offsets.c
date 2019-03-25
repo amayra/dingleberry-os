@@ -43,14 +43,13 @@ void unused(void) {
     OFFSET(struct thread, ipc_receive_ext_inf)
     OFFSET(struct thread, ipc_receive_ext_ptr)
     OFFSET(struct thread, ipc_list)
-    OFFSET(struct thread, ipc_info)
     OFFSET(struct thread, ipc_free_reply_handle)
+    OFFSET(struct thread, ipc_info)
     OFFSET(struct thread, mmu_satp)
 
     static_assert(sizeof(((struct thread){0}).state) == sizeof(int32_t), "");
     OFFSET(struct thread, state)
-    DEFINT(THREAD_STATE_WAIT_IPC_REPLY)
-    DEFINT(THREAD_STATE_WAIT_IPC_LISTEN)
+    DEFINT(THREAD_STATE_WAIT_IPC)
     DEFINT(THREAD_STATE_FINE)
 
     static_assert(HANDLE_TYPE_INVALID == 0, "");

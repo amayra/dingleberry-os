@@ -504,9 +504,9 @@ void mmu_rmap_unmap(uint64_t phys)
     }
 }
 
-uint64_t *mmu_get_satp_ptr(struct mmu *mmu)
+uint64_t mmu_get_satp(struct mmu *mmu)
 {
-    return &mmu->satp;
+    return mmu->satp;
 }
 
 void mmu_switch_to(struct mmu *mmu)

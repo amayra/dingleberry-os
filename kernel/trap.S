@@ -115,12 +115,7 @@ trap:
 
     /* Check for special send flags. Currently, fast-path does register-only
      * transfer, so all fields must be 0. */
-    bnez t3, ipc_slow_path
-
-    /* Save source thread IPC receive parameters. If we don't take the fast
-     * path, this is simply a dead store. */
-    sd t3, (THREAD_IPC_RECEIVE_EXT_INF)(tp)
-    sd t4, (THREAD_IPC_RECEIVE_EXT_PTR)(tp)
+    bnez t2, ipc_slow_path
 
     /* Check t0 handle for type. */
     /* Check overflow and compute handle address. */
@@ -139,9 +134,9 @@ exc_ah_1_e:
     li s2, HANDLE_TYPE_IPC_REPLY
     bne s1, s2, ipc_slow_path
 
-ipc_reply_listen:
-    /* s0: reply port handle struct
-       s11: handle table */
+    /* Hope for reply/listen
+     *  s0: reply port handle struct
+     *  s11: handle table */
     /* Check t1 handle for type. */
     srli s1, t1, MAX_HANDLES_LOG
     bnez s1, ipc_slow_path
@@ -163,55 +158,34 @@ exc_ah_2_e:
     /* Look for the reply-to thread; if it's dead, use slow path. */
     ld s3, (HANDLE_U_IPC_REPLY_CALLER)(s1)
     beqz s3, ipc_slow_path
-    /* Now we know the IPC operation will succeed in all cases. */
-    /* Free the reply handle. */
-    sb zero, (HANDLE_TYPE)(s2) /* HANDLE_TYPE_INVALID */
+    /* Take slow path if trivial freeing of reply handle doesn't work (avoids
+     * 3 more asm instructions in exchange for taking slow path). */
     ld s4, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
-    beqz s4, 1f
-    /* Free it fully. */
-    ld s4, (HANDLE_U_INVALID_NEXT)(s11) /* s11: HANDLE_TABLE */
-    sd s4, (HANDLE_U_INVALID_NEXT)(s2)
-    sd s2, (HANDLE_U_INVALID_NEXT)(s11)
-    j 2f
-1:
-    /* Store it for the next receive operation. */
+    bnez s4, ipc_slow_path
+    /* Now we know the IPC operation will succeed in all cases. */
+    /* Free the reply handle; store it for the next receive operation. */
     sd s2, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
-2:
+    /* Set wait handle. */
+    sd t1, (THREAD_IPC_HANDLE)(tp)
     /* Put source thread into listener list. */
     ld s4, (IPC_LISTENER_LISTENERS)(s6)
     sd tp, (IPC_LISTENER_LISTENERS)(s6)
     sd s4, (THREAD_IPC_LIST)(tp)
-    /* Change source thread state to waiting for IPC. */
-    li s5, THREAD_STATE_WAIT_IPC_LISTEN
-    sw s5, (THREAD_STATE)(tp)
-    /* Change target thread state to running. */
-    li s5, THREAD_STATE_FINE
-    sw s5, (THREAD_STATE)(s3)
-    /* Save context for sender thread. */
-    la s5, ipc_receive_slowpath
-    sd s5, (THREAD_KERNEL_PC)(tp)
-    sd sp, (THREAD_KERNEL_SP)(tp)
-    /* Since we use fast path, target pc is just discarded. The invariant for
-     * the THREAD_STATE_WAIT_IPC_LISTEN state allows this. */
-    ld sp, (THREAD_KERNEL_SP)(s3)
-    /* Actual context switch. */
-    mv tp, s3
     /* Fill receive registers. */
-    mv t0, zero /* clobbered */
-    mv t1, zero /* same */
-    mv t3, zero /* receive flags all 0 due to fastpath */
-    j ipc_receive_fastpath
+    mv t0, zero /* KERN_HANDLE_INVALID */
+    mv t1, zero /* explicitly returned as 0 */
+    /* Return */
+    j ipc_receive_common
 
+    /* Hope for send/wait.
+     *  s0: target port handle struct
+     *  s11: handle table */
 ipc_send_wait:
-    /* s0: target port handle struct
-       s11: handle table */
     /* Check for proper blocking send/wait call. */
     bne t0, t1, ipc_slow_path
     /* At this point, it really looks like a send/wait call. */
     /* Load pointer to ipc_listener. */
     ld s1, (HANDLE_U_IPC_TARGET_LISTENER)(s0)
-    /* Also the user_data, for later. */
-    ld s6, (HANDLE_U_IPC_TARGET_USER_DATA)(s0)
     /* Load ipc_listener.listeners; if it's NULL, use slow path. */
     ld s3, (IPC_LISTENER_LISTENERS)(s1)
     beqz s3, ipc_slow_path
@@ -222,8 +196,15 @@ ipc_send_wait:
     ld s4, (THREAD_IPC_FREE_REPLY_HANDLE)(s3)
     beqz s4, ipc_slow_path
     /* Now we know the IPC operation will succeed in all cases. */
+    /* Set wait handle. */
+    sd t1, (THREAD_IPC_HANDLE)(tp)
+    /* Load user_data (to be returned to user). */
+    ld t1, (HANDLE_U_IPC_TARGET_USER_DATA)(s0)
     /* We're going to use the reply handle. */
     sd zero, (THREAD_IPC_FREE_REPLY_HANDLE)(s3)
+    /* Reply handle (to be returned to user)). */
+    sub t0, s4, s11
+    srli t0, t0, HANDLE_SIZE_LOG
     /* Switch address space. */
     call ipc_switch_aspace
     /* Initialize reply handle. */
@@ -233,39 +214,19 @@ ipc_send_wait:
     /* Unlink target thread from ipc_listener */
     ld s5, (THREAD_IPC_LIST)(s3)
     sd s5, (IPC_LISTENER_LISTENERS)(s1)
-    /* Change source thread state to waiting for reply. */
-    li s5, THREAD_STATE_WAIT_IPC_REPLY
-    sw s5, (THREAD_STATE)(tp)
-    /* Change target thread state to running. */
-    li s5, THREAD_STATE_FINE
-    sw s5, (THREAD_STATE)(s3)
-    /* Save context for sender thread. */
-    la s5, ipc_receive_slowpath
-    sd s5, (THREAD_KERNEL_PC)(tp)
-    sd sp, (THREAD_KERNEL_SP)(tp)
-    /* Since we use fast path, target pc is just discarded. The invariant for
-     * the THREAD_STATE_WAIT_IPC_LISTEN state allows this. */
-    ld sp, (THREAD_KERNEL_SP)(s3)
-    /* Actual context switch. */
-    mv tp, s3
-    /* Fill receive registers. */
-    mv t1, s6 /* user_data */
-    mv t3, zero /* receive flags all 0 due to fastpath */
-    /* Turn reply handle pointer to index handle. */
-    sub s4, s4, s11
-    srli t0, s4, HANDLE_SIZE_LOG
-    j ipc_receive_fastpath
+    /* Return */
+    j ipc_receive_common
 
     /* Change address space from tp to the thread in s3. There are various
      * complications such as avoiding flushing TLBs when ASIDs are used, or
      * managing ASIDs in the first place.
      * This function cobbers at most s8-s10. */
 ipc_switch_aspace:
-    ld s4, (THREAD_MMU_SATP)(tp)
-    ld s5, (THREAD_MMU_SATP)(s3)
-    beq s4, s5, 1f
+    ld s8, (THREAD_MMU_SATP)(tp)
+    ld s9, (THREAD_MMU_SATP)(s3)
+    beq s8, s9, 1f
     /* But for now, always flush TLBs. */
-    csrw satp, s5
+    csrw satp, s9
     sfence.vma zero, zero
 1:
     ret
@@ -280,16 +241,33 @@ ipc_receive_slowpath:
     /* ... */
     call abort
 
-    /* This basically just returns, similar to syscall return, but without
-     *
-     */
-ipc_receive_fastpath:
+    /* Common trailing code for fast path.
+     *  s3: target thread */
+ipc_receive_common:
+    /* Save source thread IPC receive parameters. */
+    sd t3, (THREAD_IPC_RECEIVE_EXT_INF)(tp)
+    sd t4, (THREAD_IPC_RECEIVE_EXT_PTR)(tp)
+    /* Change source thread state to waiting for IPC. */
+    li s5, THREAD_STATE_WAIT_IPC
+    sw s5, (THREAD_STATE)(tp)
+    /* Change target thread state to running. */
+    li s5, THREAD_STATE_FINE
+    sw s5, (THREAD_STATE)(s3)
+    /* Save context for sender thread. */
+    la s5, ipc_receive_slowpath
+    sd s5, (THREAD_KERNEL_PC)(tp)
+    sd sp, (THREAD_KERNEL_SP)(tp)
+    /* Since we use fast path, target pc and sp are just discarded (yep, the
+     * kernel stack is unused for this). The invariants for the
+     * THREAD_STATE_WAIT_IPC_REPLY/LISTEN states allow this. */
+    /* Actual context switch. */
+    mv tp, s3
     /* Prevent information leakage through unused registers.
      *  a0-a6: used to transfer user data
-     *  a7: return status code
-     *  t0, t1, t3: specific IPC return values
-     *  ra: handled by return code */
+     *  t0, t1: specific IPC return values
+     *  ra: clobbered by return code */
     mv t2, zero
+    mv t3, zero /* receive flags all 0 due to fastpath */
     mv t4, zero
     mv t5, zero
     mv t6, zero

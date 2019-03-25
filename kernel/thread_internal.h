@@ -50,24 +50,25 @@ struct thread {
     void *kernel_sp;
     void *kernel_pc;
 
-    // In THREAD_STATE_WAIT_IPC_*, this specifies the handle that is being used.
+    // In THREAD_STATE_WAIT_IPC, this specifies the handle that is being used.
     // The handle must always be consistent (e.g. when the handle is closed by
     // an unrelated syscall, there is enough information to update all threads
     // waiting on it).
     int64_t ipc_handle;
-    // User information for receiving (actually, raw t3/t4 contents).
+    // User information for receiving (actually, raw t3/t4 contents), for
+    // THREAD_STATE_WAIT_IPC state.
     size_t ipc_receive_ext_inf;
     size_t ipc_receive_ext_ptr;
-    // THREAD_STATE_WAIT_IPC_LISTEN / THREAD_STATE_WAIT_IPC_SEND siblings
+    // THREAD_STATE_WAIT_IPC / THREAD_STATE_WAIT_IPC_SEND siblings
     struct thread *ipc_list;
-    // Saved reply handle. Only valid for THREAD_STATE_WAIT_IPC_LISTEN. Avoids
-    // going though alloc/dealloc.
+    // Saved reply handle. Only valid for ipc_handle==HANDLE_TYPE_IPC_LISTENER.
+    // Avoids going though alloc/dealloc.
     struct handle *ipc_free_reply_handle;
     // Slow path data for IPC.
     struct ipc_info *ipc_info;
 
-    // See mmu_get_satp_ptr(); used by asm.
-    uint64_t *mmu_satp;
+    // See mmu_get_satp(); used by asm.
+    uint64_t mmu_satp;
 
     // Trap filtering (primitive exception handling).
     uintptr_t trap_sp;
