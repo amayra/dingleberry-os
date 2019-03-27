@@ -111,7 +111,7 @@ trap:
 .option pop
 
     /* Syscall 0, IPC, is special: different ABI, asm fast path. */
-    bnez a7, normal_syscall
+    bnez t6, normal_syscall
 
     /* Check for special send flags. Currently, fast-path does register-only
      * transfer, so all fields must be 0. */
@@ -258,8 +258,8 @@ ipc_receive_common:
     sd s5, (THREAD_KERNEL_PC)(tp)
     sd sp, (THREAD_KERNEL_SP)(tp)
     /* Since we use fast path, target pc and sp are just discarded (yep, the
-     * kernel stack is unused for this). The invariants for the
-     * THREAD_STATE_WAIT_IPC_REPLY/LISTEN states allow this. */
+     * kernel stack is unused for this). The invariant for the
+     * THREAD_STATE_WAIT_IPC state allows this. */
     /* Actual context switch. */
     mv tp, s3
     /* Prevent information leakage through unused registers.
@@ -270,22 +270,21 @@ ipc_receive_common:
     mv t3, zero /* receive flags all 0 due to fastpath */
     mv t4, zero
     mv t5, zero
-    mv t6, zero
-    li a7, 1 /* success; IPC received */
+    li t6, 1 /* success; IPC received */
     j return_to_user
 
 normal_syscall:
     /* Dispatch the syscall. */
     li s0, SYSCALL_COUNT
-    bltu a7, s0, 1f
+    bltu t6, s0, 1f
     li s1, 1
     la s0, syscall_unavailable
-    mv a0, a7
+    mv a0, t6
     j 2f
 1:
-    slli a7, a7, 3
+    slli t6, t6, 3
     la s0, syscall_table
-    add s0, s0, a7
+    add s0, s0, t6
     ld s0, 0(s0)
 2:
     jalr s0

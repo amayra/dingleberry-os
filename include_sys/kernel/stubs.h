@@ -6,8 +6,9 @@
 
 #include "api.h"
 
-static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
-                                size_t a3, size_t a4, size_t a5, size_t a6)
+static inline size_t kern_call8(size_t fn, size_t a0, size_t a1, size_t a2,
+                                size_t a3, size_t a4, size_t a5, size_t a6,
+                                size_t a7)
 {
     register size_t r_a0 __asm("a0") = a0;
     register size_t r_a1 __asm("a1") = a1;
@@ -16,7 +17,8 @@ static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
     register size_t r_a4 __asm("a4") = a4;
     register size_t r_a5 __asm("a5") = a5;
     register size_t r_a6 __asm("a6") = a6;
-    register size_t r_a7 __asm("a7") = fn;
+    register size_t r_a7 __asm("a7") = a7;
+    register size_t r_t6 __asm("t6") = fn;
     __asm volatile("ecall"
         : "=r" (r_a0),
           // Clobber the rest.
@@ -26,7 +28,8 @@ static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
           "=r" (r_a4),
           "=r" (r_a5),
           "=r" (r_a6),
-          "=r" (r_a7)
+          "=r" (r_a7),
+          "=r" (r_t6)
         : "r"  (r_a0),
           "r"  (r_a1),
           "r"  (r_a2),
@@ -34,9 +37,10 @@ static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
           "r"  (r_a4),
           "r"  (r_a5),
           "r"  (r_a6),
-          "r"  (r_a7)
+          "r"  (r_a7),
+          "r"  (r_t6)
         // Clobber all other non-callee-saved/immutable registers.
-        : "ra", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "memory");
+        : "ra", "t0", "t1", "t2", "t3", "t4", "t5", "memory");
     return r_a0;
 }
 
@@ -57,6 +61,8 @@ static inline size_t kern_call7(size_t fn, size_t a0, size_t a1, size_t a2,
         kern_call7(fn, a0, a1, a2, a3, a4, 0,  0)
 #define kern_call6(fn, a0, a1, a2, a3, a4, a5) \
         kern_call7(fn, a0, a1, a2, a3, a4, a5, 0)
+#define kern_call7(fn, a0, a1, a2, a3, a4, a5, a6) \
+        kern_call8(fn, a0, a1, a2, a3, a4, a5, a6, 0)
 
 static inline int kern_get_time(struct kern_timespec *t)
 {

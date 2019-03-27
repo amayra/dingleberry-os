@@ -309,16 +309,16 @@ long __emu_SYS_exit_1(long a)
     register volatile int *r_ctid __asm("a2") = ctid;
     __asm volatile("mv s0, a0\n"            // copy to a syscall-saved register
                    "sd zero, (a2)\n"        // clear ctid
-                   "li a7, %[futex_fn]\n"
+                   "li t6, %[futex_fn]\n"
                    "li a0, %[futex_wake]\n"
                    "li a1, 0\n"
                    "li a3, -1\n"
                    "ecall\n"                // futex wakeup on ctid
-                   "li a7, %[close_fn]\n"
+                   "li t6, %[close_fn]\n"
                    "mv a0, s0\n"
                    "ecall\n"                // exit this thread
                    "1:\n"
-                   "li a7, %[stop_fn]\n"
+                   "li t6, %[stop_fn]\n"
                    "ecall\n"                // unreachable
                    "j 1b\n"
                    :
@@ -347,13 +347,13 @@ void __unmapself(void *p, size_t s)
     register void *r_p __asm("a1") = p;
     register size_t r_s __asm("a2") = s;
     __asm volatile("mv s0, a0\n"            // copy to a syscall-saved register
-                   "li a7, %[munmap_fn]\n"
+                   "li t6, %[munmap_fn]\n"
                    "ecall\n"                // unmap stack
-                   "li a7, %[close_fn]\n"
+                   "li t6, %[close_fn]\n"
                    "mv a0, s0\n"
                    "ecall\n"                // exit this thread
                    "1:\n"
-                   "li a7, %[stop_fn]\n"
+                   "li t6, %[stop_fn]\n"
                    "ecall\n"                // unreachable
                    "j 1b\n"
                    :

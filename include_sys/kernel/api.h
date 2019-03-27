@@ -27,21 +27,19 @@ struct kern_timespec {
 //    registers that are not explicitly callee-saved or immutable.
 //    (Rationale: micro-optimizations for performance.)
 //  - ra is changed from unsaved to callee-saved
-//  - a0-a6 are used to pass arguments. a0 is used for the return value.
-//  - a7 is used to pass the syscall number (even if the number of arguments
-//    is less than 6, e.g. for a 2 argument syscall, a0, a1, and a7 are used,
-//    while a2-a6 are ignored)
+//  - a0-a7 are used to pass arguments. a0 is used for the return value.
+//  - t6 is used to pass the syscall number
 //
-// In addition, the IPC syscall uses a special ABI, that assigns meaning to
-// registers t0-t3, and and uses registers a0-a6 for IPC payload. a7 is used
-// for the syscall number, and controls which ABI is used.
+// In addition, the IPC syscall uses a special ABI, that uses registers t0-t3
+// for syscall arguments, and registers a0-a7 for IPC payload. t6 is always
+// used for the syscall number, and controls which ABI is used.
 //
 // Summary:
 //
 // Preserved/immutable: zero, sp, gp, tp, s0-s11
-// Syscall number (not preserved): a7
-// Arguments (not preserved): ra, a0-a6
-// Other not preserved: t0-t6
+// Syscall number (not preserved): t6
+// Arguments (not preserved): a0-a7
+// Other not preserved: ra, t0-t5
 
 // Handles:
 //
@@ -149,7 +147,7 @@ struct kern_timespec {
 //
 // This uses a different ABI from other syscalls. The reason for this is stub
 // efficiency and freeing up registers for IPC transfer. The only common part is
-// that the syscall number is passed in a7.
+// that the syscall number is passed in t6.
 //
 //  a0-a6: payload, i.e. user data transferred with IPC. All these registers are
 //         always transferred, and the caller may need to clear unused registers
@@ -162,12 +160,12 @@ struct kern_timespec {
 //  t2:     send flags                      (clobbered)
 //  t3:     receive flags                   updated receive flags
 //  t4:     extra message data ptr.         (clobbered)
-//  t5-t6:  (clobbered)                     (clobbered)
-//  a7:     KERN_FN_IPC                     0/1 on success, otherwise error code
+//  t5:     (clobbered)                     (clobbered)
+//  t6:     KERN_FN_IPC                     0/1 on success, otherwise error code
 //
-// a7 is guaranteed to be 0 or 1 on success. Success is only wrt. the IPC
+// t6 is guaranteed to be 0 or 1 on success. Success is only wrt. the IPC
 // operations. If a RPC call logically fails, it needs to do its own signaling
-// within the payload. If a receive operation was performed, a7 is set to 1,
+// within the payload. If a receive operation was performed, t6 is set to 1,
 // if no receive operation was requested, it is set to 0.
 //
 // t0 must be either:
@@ -210,7 +208,7 @@ struct kern_timespec {
 // not be received.
 //
 // If both t0 and t2 are set to KERN_HANDLE_INVALID, the syscall does nothing
-// and returns with a7=0.
+// and returns with t6=0.
 //
 // Reply port handles cannot be duplicated. Closing a reply port handle makes
 // the client IPC syscall return with an error.
