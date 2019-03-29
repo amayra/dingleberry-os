@@ -73,20 +73,20 @@
 // This uses a single "terapage" PTE.
 #define BOOT_PHY_MAP_SIZE       MMU_PAGE_SIZE(0)
 
+#define KERNEL_PHY_END          (KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE)
+
 // Location of the per-process kernel space region. This contains kernel
 // mappings which are per userpsace process address space, despite being in the
 // kernel address space region, and not being readable by userspace. This area
 // is managed specially by mmu.c, and must be aligned on top-level PTE
 // boundaries. mmu_ functions require the userspace mmu handle as parameter,
 // with the MMU_FLAG_PS flag set.
-#define KERNEL_PS_BASE          (KERNEL_PHY_BASE + BOOT_PHY_MAP_SIZE)
+// This is currently unused; used to be used for handle table.
+// All associated code should be removed if there's no new use.
+#define KERNEL_PS_BASE          KERNEL_PHY_END
 #define KERNEL_PS_SIZE_LOG      MMU_PAGE_SIZE_LOG(0)
 #define KERNEL_PS_SIZE          (ULL(1) << KERNEL_PS_SIZE_LOG)
 #define KERNEL_PS_END           (KERNEL_PS_BASE + KERNEL_PS_SIZE)
-// (it's all used by the handle table)
-#define HANDLE_TABLE_BASE       KERNEL_PS_BASE
-#define HANDLE_TABLE_SIZE_LOG   KERNEL_PS_SIZE_LOG
-#define HANDLE_TABLE_SIZE       (ULL(1) << HANDLE_TABLE_SIZE_LOG)
 
 // Misc. kernel virtual memory until end of address space; managed at runtime.
 #define VIRT_ALLOC_BASE         KERNEL_PS_END

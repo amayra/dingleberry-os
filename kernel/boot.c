@@ -598,8 +598,13 @@ static void continue_boot(void)
     if (!as)
         panic("Could not allocate user addressspace.\n");
 
-    mmu_switch_to(vm_aspace_get_mmu(as));
-    if (!handle_table_create(vm_aspace_get_mmu(as)))
+    struct thread *ut = thread_create();
+    if (!ut)
+        panic("Failed to create user thread.\n");
+
+    thread_set_aspace(ut, as);
+
+    if (!handle_table_create(ut))
         panic("Failed to create user handle table.\n");
 
     uintptr_t entrypoint;
@@ -623,17 +628,13 @@ static void continue_boot(void)
     // Make sure timer IRQ fires at least once.
     time_set_next_event(1);
 
-    struct thread *ut = thread_create();
-    if (!ut)
-        panic("Failed to create user thread.\n");
-
     struct handle h = {
         .type = HANDLE_TYPE_THREAD,
         .u = {
             .thread = ut,
         },
     };
-    int64_t t_h = handle_add_or_free_on(vm_aspace_get_mmu(as), &h);
+    int64_t t_h = handle_add_or_free(ut, &h);
     if (!KERN_IS_HANDLE_VALID(t_h))
         panic("Failed to create thread handle.\n");
 

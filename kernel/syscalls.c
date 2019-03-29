@@ -1,9 +1,11 @@
 #include "arch.h"
 #include "handle.h"
+#include "ipc.h"
 #include "kernel.h"
 #include "mmu.h"
 #include "page_alloc.h"
 #include "page_internal.h"
+#include "slob.h"
 #include "thread.h"
 #include "thread_internal.h"
 #include "time.h"
@@ -81,20 +83,23 @@ static void syscall_debug_write_char(size_t v)
 
 static void syscall_debug_stop(void)
 {
-    panic("User stop.\n");
+    struct asm_regs regs;
+    thread_fill_syscall_saved_regs(thread_current(), &regs);
+    panic("User stop from PC=%p.\n", (void *)regs.pc);
 }
 
-static struct thread *lookup_thread(int64_t handle)
+static struct thread *lookup_thread(kern_handle handle)
 {
+    struct thread *t = thread_current();
     if (handle == KERN_HANDLE_INVALID)
-        return thread_current();
-    struct handle *h = handle_lookup_type(handle, HANDLE_TYPE_THREAD);
+        return t;
+    struct handle *h = handle_lookup_type(t, handle, HANDLE_TYPE_THREAD);
     return h ? h->u.thread : NULL;
 }
 
-static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
+static kern_handle syscall_thread_create(kern_handle aspace, int new_aspace)
 {
-    struct thread *t = lookup_thread(aspace_handle);
+    struct thread *t = lookup_thread(aspace);
     if (!t)
         return -1; // bad handle
 
@@ -109,12 +114,8 @@ static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
             thread_set_state(new, THREAD_STATE_DEAD);
             return -1; // OOM
         }
-        struct mmu *mmu = vm_aspace_get_mmu(as);
-        mmu_switch_to(mmu);
-        bool ok = handle_table_create(mmu);
-        mmu_switch_to(thread_get_mmu(thread_current()));
-        if (!ok) {
-            vm_aspace_free(as);
+        thread_set_aspace(new, as);
+        if (!handle_table_create(new)) {
             thread_set_state(new, THREAD_STATE_DEAD);
             return -1; // OOM
         }
@@ -128,12 +129,12 @@ static int64_t syscall_thread_create(int64_t aspace_handle, int new_aspace)
             .thread = new,
         },
     };
-    return handle_add_or_free(&h);
+    return handle_add_or_free(thread_current(), &h);
 }
 
-static int syscall_thread_set_context(int thread_handle, uintptr_t regs_arg)
+static int syscall_thread_set_context(kern_handle thread,  uintptr_t regs_arg)
 {
-    struct thread *t = lookup_thread(thread_handle);
+    struct thread *t = lookup_thread(thread);
     if (!t)
         return -1; // bad handle
 
@@ -151,21 +152,21 @@ static int syscall_thread_set_context(int thread_handle, uintptr_t regs_arg)
     return 0;
 }
 
-static void *syscall_mmap(int64_t dst_handle, void *addr, size_t length,
+static void *syscall_mmap(kern_handle dst, void *addr, size_t length,
                           int flags, int handle, uint64_t offset)
 {
-    struct thread *t = lookup_thread(dst_handle);
+    struct thread *t = lookup_thread(dst);
     if (!t)
         return (void *)-1; // bad handle
     struct vm_aspace *as = thread_get_aspace(t);
-    if (handle >= 0)
+    if (KERN_IS_HANDLE_VALID(handle))
         return (void *)-1; // not implemented
     return vm_mmap(as, addr, length, flags, NULL, offset);
 }
 
-static int syscall_munmap(int64_t dst_handle, void *addr, size_t length)
+static int syscall_munmap(kern_handle dst, void *addr, size_t length)
 {
-    struct thread *t = lookup_thread(dst_handle);
+    struct thread *t = lookup_thread(dst);
     if (!t)
         return -1; // bad handle
     struct vm_aspace *as = thread_get_aspace(t);
@@ -203,37 +204,30 @@ static int64_t syscall_copy_aspace(int64_t src, int64_t dst, int emulate_fork)
     return 0;
 }
 
-static int syscall_close(int64_t handle)
+static int syscall_close(kern_handle handle)
 {
-    struct handle *h = handle_lookup(handle);
+    struct thread *t = thread_current();
+    struct handle *h = handle_lookup(t, handle);
     if (!h)
         return -1;
-    handle_free(h);
+    handle_free(t, h);
     return 0;
 }
 
-static int64_t syscall_copy_handle(int64_t dst_handle, int64_t handle)
+static kern_handle syscall_copy_handle(kern_handle dst, kern_handle handle)
 {
-    struct thread *dst = lookup_thread(dst_handle);
-    struct handle *h = handle_lookup(handle);
-    if (!dst || !h)
+    struct thread *t = lookup_thread(dst);
+    struct handle *h = handle_lookup(thread_current(), handle);
+    if (!t || !h)
         return -1; // bad handle
 
-    // Since we switch address spaces, we can't access both handles at the same
-    // time. Note that this cause trouble with non-trivial handle_vtable.ref
-    // calls, so I'm sure this will fuck over soon enough.
-    struct handle h_copy = *h;
-
-    struct mmu *mmu = thread_get_mmu(dst);
-    mmu_switch_to(mmu);
-    struct handle *new = handle_alloc_on(mmu);
-    if (!handle_vtable[h_copy.type]->ref(new, &h_copy)) {
-        handle_free_on(mmu, new);
+    struct handle *new = handle_alloc(t);
+    if (!handle_vtable[h->type]->ref(new, h)) {
+        handle_free(t, new);
         new = NULL;
     }
-    mmu_switch_to(thread_get_mmu(thread_current()));
 
-    return handle_get_id(new);
+    return handle_get_id(t, new);
 }
 
 static bool get_futex_addr(uintptr_t uaddr, struct phys_page **page, int *offset)
@@ -305,7 +299,7 @@ static int syscall_yield(void)
     return 0;
 }
 
-static size_t syscall_tls(int64_t handle, int op, unsigned index, size_t val)
+static size_t syscall_tls(kern_handle handle, int op, unsigned index, size_t val)
 {
     struct thread *t = lookup_thread(handle);
     if (!t)
@@ -324,19 +318,46 @@ static size_t syscall_tls(int64_t handle, int op, unsigned index, size_t val)
     return (size_t)-1; // unknown OP
 }
 
-static int64_t syscall_memobj_create(void)
+static kern_handle syscall_memobj_create(void)
 {
     return -1;
 }
 
-static int64_t syscall_ipc_listener_create(void)
+static kern_handle syscall_ipc_listener_create(void)
 {
-    return -1;
+    struct ipc_listener *l = slob_allocz(&ipc_listener_slob);
+    if (!l)
+        return -1; // OOM
+    l->refcount_listeners += 1;
+    struct handle h = {
+        .type = HANDLE_TYPE_IPC_LISTENER,
+        .u = {
+            .ipc_listener = {
+                .listener = l,
+            },
+        },
+    };
+    return handle_add_or_free(thread_current(), &h);
 }
 
-static int64_t syscall_ipc_target_create(void)
+static kern_handle syscall_ipc_target_create(kern_handle listener, size_t ud)
 {
-    return -1;
+    struct handle *hl =
+        handle_lookup_type(thread_current(), listener, HANDLE_TYPE_IPC_LISTENER);
+    if (!hl)
+        return -1; // invalid listener handle
+    struct ipc_listener *l = hl->u.ipc_listener.listener;
+    l->refcount_targets += 1;
+    struct handle h = {
+        .type = HANDLE_TYPE_IPC_TARGET,
+        .u = {
+            .ipc_target = {
+                .listener = l,
+                .user_data = ud,
+            },
+        },
+    };
+    return handle_add_or_free(thread_current(), &h);
 }
 
 // This array is used in ASM.

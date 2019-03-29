@@ -46,6 +46,8 @@ void unused(void) {
     OFFSET(struct thread, ipc_free_reply_handle)
     OFFSET(struct thread, ipc_info)
     OFFSET(struct thread, mmu_satp)
+    OFFSET(struct thread, handle_table.handles)
+    OFFSET(struct thread, handle_table.num_handles)
 
     static_assert(sizeof(((struct thread){0}).state) == sizeof(int32_t), "");
     OFFSET(struct thread, state)
@@ -56,9 +58,8 @@ void unused(void) {
     DEFINT(HANDLE_TYPE_IPC_TARGET)
     DEFINT(HANDLE_TYPE_IPC_REPLY)
     DEFINT(HANDLE_TYPE_IPC_LISTENER)
-    DEFINT(HANDLE_TABLE)
+    DEFINT(HANDLE_TYPE_RESERVED)
     DEFINT(HANDLE_SIZE_LOG)
-    DEFINT(MAX_HANDLES_LOG)
 
     OFFSET(struct handle, type)
     OFFSET(struct handle, u.ipc_target.listener)

@@ -54,7 +54,7 @@ struct thread {
     // The handle must always be consistent (e.g. when the handle is closed by
     // an unrelated syscall, there is enough information to update all threads
     // waiting on it).
-    int64_t ipc_handle;
+    kern_handle ipc_handle;
     // User information for receiving (actually, raw t3/t4 contents), for
     // THREAD_STATE_WAIT_IPC state.
     size_t ipc_receive_ext_inf;
@@ -63,12 +63,14 @@ struct thread {
     struct thread *ipc_list;
     // Saved reply handle. Only valid for ipc_handle==HANDLE_TYPE_IPC_LISTENER.
     // Avoids going though alloc/dealloc.
-    struct handle *ipc_free_reply_handle;
+    kern_handle ipc_free_reply_handle;
     // Slow path data for IPC.
     struct ipc_info *ipc_info;
 
     // See mmu_get_satp(); used by asm.
     uint64_t mmu_satp;
+
+    struct handle_table handle_table;
 
     // Trap filtering (primitive exception handling).
     uintptr_t trap_sp;

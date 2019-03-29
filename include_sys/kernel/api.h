@@ -14,6 +14,15 @@ struct kern_timespec {
     uint32_t nsec;
 };
 
+// A kernel handle is a igned register sized type. This is always ptrdiff_t
+// (probably), which is always long (probably). Since the intent is different
+// (it's not a difference of pointers), and long is not "always" register sized,
+// hide it behind a typedef.
+typedef long kern_handle;
+
+// An invalid handle is 0 to ensure that handle fields are initialized to
+// invalid by C default initialization rules. As an implementation detail, the
+// kernel uses array entry 0 for the freelist.
 // (Often used as magic value to refer to the calling thread.)
 #define KERN_HANDLE_INVALID         0
 
@@ -273,7 +282,7 @@ struct kern_ipc_flags {
 // Create a new listener port for IPC. The resulting handle can be passed as
 // IPC receive handle, or to create new target ports with
 // KERN_FN_IPC_CREATE_TARGET.
-// Note: listener port handles cannot be duplicated.
+// TODO: should duplicating these handles be allowed or not?
 //  returns: listener port handle, or error code on resource exhaustion
 #define KERN_FN_IPC_LISTENER_CREATE 1
 

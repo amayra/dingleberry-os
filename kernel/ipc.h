@@ -24,3 +24,5 @@ struct ipc_listener {
 struct ipc_info {
     size_t payload[7]; // a0-a6
 };
+
+extern struct slob ipc_listener_slob;

@@ -119,16 +119,13 @@ trap:
 
     /* Check t0 handle for type. */
     /* Check overflow and compute handle address. */
-    srli s0, t0, MAX_HANDLES_LOG
-    bnez s0, ipc_slow_path
+    ld s10, (THREAD_HANDLE_TABLE_NUM_HANDLES)(tp)
+    bge t0, s10, ipc_slow_path
     slli s0, t0, HANDLE_SIZE_LOG
-    li s11, HANDLE_TABLE
+    ld s11, (THREAD_HANDLE_TABLE_HANDLES)(tp)
     add s0, s0, s11
-    /* Access handle (the handle table is sparse and can cause page faults). */
-exc_ah_1_s:
-    lbu s1, (HANDLE_TYPE)(s0)
-exc_ah_1_e:
     /* Look what it is. */
+    lbu s1, (HANDLE_TYPE)(s0)
     li s2, HANDLE_TYPE_IPC_TARGET
     beq s1, s2, ipc_send_wait
     li s2, HANDLE_TYPE_IPC_REPLY
@@ -136,17 +133,13 @@ exc_ah_1_e:
 
     /* Hope for reply/listen
      *  s0: reply port handle struct
-     *  s11: handle table */
+     *  s10, s11: handle table */
     /* Check t1 handle for type. */
-    srli s1, t1, MAX_HANDLES_LOG
-    bnez s1, ipc_slow_path
+    bge s1, s10, ipc_slow_path
     slli s1, t1, HANDLE_SIZE_LOG
     add s1, s1, s11
-    /* Access handle. */
-exc_ah_2_s:
-    lbu s2, (HANDLE_TYPE)(s1)
-exc_ah_2_e:
     /* Look what it is. */
+    lbu s2, (HANDLE_TYPE)(s1)
     li s3, HANDLE_TYPE_IPC_LISTENER
     bne s2, s3, ipc_slow_path
     /* At this point, it really looks like a reply/listen call. */
@@ -156,7 +149,7 @@ exc_ah_2_e:
     ld s3, (IPC_LISTENER_WAITERS)(s6)
     bnez s3, ipc_slow_path
     /* Look for the reply-to thread; if it's dead, use slow path. */
-    ld s3, (HANDLE_U_IPC_REPLY_CALLER)(s1)
+    ld s3, (HANDLE_U_IPC_REPLY_CALLER)(s0)
     beqz s3, ipc_slow_path
     /* Take slow path if trivial freeing of reply handle doesn't work (avoids
      * 3 more asm instructions in exchange for taking slow path). */
@@ -164,7 +157,7 @@ exc_ah_2_e:
     bnez s4, ipc_slow_path
     /* Now we know the IPC operation will succeed in all cases. */
     /* Free the reply handle; store it for the next receive operation. */
-    sd s2, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
+    sd s0, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
     /* Set wait handle. */
     sd t1, (THREAD_IPC_HANDLE)(tp)
     /* Put source thread into listener list. */
@@ -205,8 +198,6 @@ ipc_send_wait:
     /* Reply handle (to be returned to user)). */
     sub t0, s4, s11
     srli t0, t0, HANDLE_SIZE_LOG
-    /* Switch address space. */
-    call ipc_switch_aspace
     /* Initialize reply handle. */
     li s5, HANDLE_TYPE_IPC_REPLY
     sb s5, (HANDLE_TYPE)(s4)
@@ -216,20 +207,6 @@ ipc_send_wait:
     sd s5, (IPC_LISTENER_LISTENERS)(s1)
     /* Return */
     j ipc_receive_common
-
-    /* Change address space from tp to the thread in s3. There are various
-     * complications such as avoiding flushing TLBs when ASIDs are used, or
-     * managing ASIDs in the first place.
-     * This function cobbers at most s8-s10. */
-ipc_switch_aspace:
-    ld s8, (THREAD_MMU_SATP)(tp)
-    ld s9, (THREAD_MMU_SATP)(s3)
-    beq s8, s9, 1f
-    /* But for now, always flush TLBs. */
-    csrw satp, s9
-    sfence.vma zero, zero
-1:
-    ret
 
     /* Call slow path C code for arbitrary IPC. */
 ipc_slow_path:
@@ -244,6 +221,17 @@ ipc_receive_slowpath:
     /* Common trailing code for fast path.
      *  s3: target thread */
 ipc_receive_common:
+    /* Change address space from tp to the thread in s3. There are various
+     * complications such as avoiding flushing TLBs when ASIDs are used, or
+     * managing ASIDs in the first place.
+     * This function cobbers at most s8-s10. */
+    ld s8, (THREAD_MMU_SATP)(tp)
+    ld s9, (THREAD_MMU_SATP)(s3)
+    beq s8, s9, 1f
+    /* But for now, always flush TLBs. */
+    csrw satp, s9
+    sfence.vma zero, zero
+1:
     /* Save source thread IPC receive parameters. */
     sd t3, (THREAD_IPC_RECEIVE_EXT_INF)(tp)
     sd t4, (THREAD_IPC_RECEIVE_EXT_PTR)(tp)
@@ -262,6 +250,7 @@ ipc_receive_common:
      * THREAD_STATE_WAIT_IPC state allows this. */
     /* Actual context switch. */
     mv tp, s3
+    csrw sscratch, tp
     /* Prevent information leakage through unused registers.
      *  a0-a6: used to transfer user data
      *  t0, t1: specific IPC return values
@@ -530,7 +519,5 @@ emergency_trap_stack_end:
     EXCEPTION_ENTRY(s, e, h, ASM_EXCEPTION_TYPE_KERNEL_LOAD)
 .balign 8
 asm_exception_table:
-    EXCEPTION_KLOAD(exc_ah_1_s, exc_ah_1_e, ipc_slow_path)
-    EXCEPTION_KLOAD(exc_ah_2_s, exc_ah_2_e, ipc_slow_path)
     /* Termination. */
     EXCEPTION_ENTRY(0, 0, 0, 0)

@@ -1,225 +1,180 @@
 #include "handle.h"
 #include "kernel.h"
+#include "kmalloc.h"
 #include "memory.h"
 #include "mmu.h"
 #include "page_alloc.h"
 #include "thread.h"
+#include "thread_internal.h"
+#include "virtual_memory.h"
 
 #include <kernel/api.h>
 
-// Require that struct handle is evenly divisible by PAGE_SIZE. This makes some
-// things less of a pain due to the virtual address space mapping. It prevents
-// that a struct handle can stride a page boundary.
-static_assert(PAGE_SIZE / sizeof(struct handle) *
-              sizeof(struct handle) == PAGE_SIZE, "");
-
-#define HANDLES_ALLOCATED_SIZE (HANDLE_TABLE[0].u.invalid.allocated_size)
+// Reserve entry 0 for freelist.
 static_assert(KERN_HANDLE_INVALID < 1, "");
 
 const struct handle_vtable *handle_vtable[HANDLE_TYPE_COUNT] = {
     [HANDLE_TYPE_THREAD] = &handle_thread,
+    [HANDLE_TYPE_IPC_LISTENER] = &handle_ipc_listener,
+    [HANDLE_TYPE_IPC_TARGET] = &handle_ipc_target,
+    [HANDLE_TYPE_IPC_REPLY] = &handle_ipc_reply,
 };
 
-// Allocate a page at the given page aligned offset and initialize it.
-static bool allocate_handle_page(struct mmu *mmu, size_t offset)
-{
-    MMU_ASSERT_CURRENT(mmu);
+#define handle_freelist_ptr(t) (&(t)->handle_table.handles[0].u.invalid.next)
 
-    if (offset >= HANDLE_TABLE_SIZE)
+// struct handle_table is duplicated in every thread struct for the sake of
+// locality of memory accesses (micro-optimization). This is called to resync
+// the table if anything has changed. This should be rare, as the contents
+// change only when the table is resized.
+static void sync_handle_tables(struct thread *t, struct handle_table table)
+{
+    struct vm_aspace_owners *list = vm_aspace_get_owners(t->aspace);
+    for (struct thread *t2 = list->head; t2; t2 = t2->aspace_siblings.next)
+        t2->handle_table = table;
+}
+
+static bool extend_handle_table(struct thread *t)
+{
+    struct handle_table table = t->handle_table;
+
+    // Call only if there are no free handles.
+    assert(!table.num_handles || !table.handles[0].u.invalid.next);
+
+    size_t new_count = MAX(16, table.num_handles) * 2;
+    if (new_count > (size_t)-1 / sizeof(struct handle))
         return false;
 
-    uint64_t phys = page_alloc_phy(1, PAGE_USAGE_HTABLE);
-    if (phys == INVALID_PHY_ADDR)
-        return false; // OOM
+    table.handles = reallocz(table.handles, new_count * sizeof(struct handle));
+    if (!table.handles)
+        return false;
 
-    if (!mmu_map(mmu, (void *)(HANDLE_TABLE_BASE + offset), phys, PAGE_SIZE,
-                 MMU_FLAG_RW | MMU_FLAG_PS | MMU_FLAG_NEW))
-    {
-        page_free_phy(phys, 1);
-        return false; // OOM, probably
+    // Note: first entry is reserved for freelist root.
+    struct handle **p_prev = &table.handles[0].u.invalid.next;
+    for (size_t n = MAX(1, table.num_handles); n < new_count; n++) {
+        struct handle *h = &table.handles[n];
+        if (h->type == HANDLE_TYPE_INVALID) {
+            // Make some effort to add them in order for cosmetic reasons.
+            *p_prev = h;
+            p_prev = &h->u.invalid.next;
+        }
     }
+    *p_prev = NULL;
 
-    memset((void *)(HANDLE_TABLE_BASE + offset), 0, PAGE_SIZE);
+    table.num_handles = new_count;
+    sync_handle_tables(t, table);
 
-    struct handle *first = &HANDLE_TABLE[offset / sizeof(struct handle)];
-    struct handle *end = first + PAGE_SIZE / sizeof(struct handle);
-    if (offset == 0)
-        first++; // reserve handle 0 for freelist root
-    // Make some effort to add them in order for cosmetic reasons.
-    struct handle **p_prev = &HANDLES_FREE_LIST;
-    assert(!*p_prev);
-    for (struct handle *cur = first; cur != end; cur++) {
-        *p_prev = cur;
-        p_prev = &cur->u.invalid.next;
-    }
-
-    HANDLES_ALLOCATED_SIZE = offset + PAGE_SIZE;
     return true;
 }
 
-static void read_handle_type_lower(void *ctx)
+bool handle_table_create(struct thread *t)
 {
-    void **args = ctx;
-    *(int *)args[1] = ((struct handle *)args[0])->type;
-}
-
-// Return h->type. If h was not mapped, return -1.
-static int read_handle_type(struct handle *h)
-{
-    int res = -1;
-    void *args[2] = {h, &res};
-    return run_trap_pagefaults(HANDLE_TABLE_BASE,
-                               HANDLE_TABLE_BASE + HANDLE_TABLE_SIZE - 1,
-                               read_handle_type_lower, args)
-        ? res : -1;
-}
-
-bool handle_table_create(struct mmu *mmu)
-{
-    MMU_ASSERT_CURRENT(mmu);
-
-    if (read_handle_type(&HANDLE_TABLE[0]) == 0)
+    if (t->handle_table.num_handles)
         return true;
 
-    return allocate_handle_page(mmu, 0);
+    return extend_handle_table(t);
 }
 
-void handle_table_destroy(struct mmu *mmu)
+void handle_table_destroy(struct thread *t)
 {
-    MMU_ASSERT_CURRENT(mmu);
-
-    if (read_handle_type(&HANDLE_TABLE[0]) < 0)
-        return; // nothing ever allocated
-
-    size_t size = HANDLES_ALLOCATED_SIZE;
-
-    for (size_t offset = 0; offset < size; offset += PAGE_SIZE) {
-        void *vaddr = (void *)(HANDLE_TABLE_BASE + offset);
-        uint64_t phys;
-        size_t page_size;
-        int flags;
-        mmu_read_entry(mmu, vaddr, &phys, &page_size, &flags);
-        assert(phys != INVALID_PHY_ADDR);
-        page_free_phy(phys, 1);
-        bool r = mmu_unmap(mmu, vaddr, PAGE_SIZE, MMU_FLAG_PS);
-        assert(r);
+    for (size_t n = 1; n < t->handle_table.num_handles; n++) {
+        struct handle *h = &t->handle_table.handles[n];
+        if (h->type != HANDLE_TYPE_INVALID && h->type != HANDLE_TYPE_RESERVED)
+            handle_vtable[h->type]->unref(h);
     }
+
+    free(t->handle_table.handles);
+    t->handle_table.handles = NULL;
+    t->handle_table.num_handles = 0;
+    sync_handle_tables(t, t->handle_table);
 }
 
-int64_t handle_get_id(struct handle *h)
+kern_handle handle_get_id(struct thread *t, struct handle *h)
 {
     if (!h)
         return KERN_HANDLE_INVALID;
-    assert(h >= &HANDLE_TABLE[0] && h < &HANDLE_TABLE[MAX_HANDLES]);
-    return h - &HANDLE_TABLE[0];
+    assert(h >= &t->handle_table.handles[0] &&
+           h < &t->handle_table.handles[t->handle_table.num_handles]);
+    return h - &t->handle_table.handles[0];
 }
 
-struct handle *handle_lookup(int64_t handle)
+struct handle *handle_lookup(struct thread *t, kern_handle handle)
 {
-    MMU_ASSERT_CURRENT(thread_get_mmu(thread_current()));
-
-    if (handle < 0 || handle >= MAX_HANDLES)
+    if (handle < 0 || handle >= t->handle_table.num_handles)
         return NULL;
 
-    struct handle *h = &HANDLE_TABLE[handle];
-
-    // (The idea is that this could be very fast in ASM "fast path" code, where
-    // you'd just do the access, page faults would work similar to table-driven
-    // exception handling, i.e. zero-cost if no page fault happens. This is much
-    // faster than read_handle_type(), which has a lot of call overhead. It
-    // seemed like a great idea in theory, but while I was writing this I
-    // thought, what the fuck is this stupid idea just to avoid a comparison op
-    // in a fast path that will never exist? It also makes some things really
-    // messy because you need to switch address spaces to modify the handle
-    // table of another process. But whatever.)
-    return read_handle_type(h) <= 0 ? NULL : h;
+    struct handle *h = &t->handle_table.handles[handle];
+    return h->type != HANDLE_TYPE_INVALID && h->type != HANDLE_TYPE_RESERVED
+           ? h : NULL;
 }
 
-struct handle *handle_lookup_type(int64_t handle, enum handle_type type)
+struct handle *handle_lookup_type(struct thread *t, kern_handle handle, enum handle_type type)
 {
-    struct handle *h = handle_lookup(handle);
+    struct handle *h = handle_lookup(t, handle);
     return h && h->type == type ? h : NULL;
 }
 
-struct handle *handle_alloc(void)
+struct handle *handle_alloc(struct thread *t)
 {
-    return handle_alloc_on(thread_get_mmu(thread_current()));
-}
-
-struct handle *handle_alloc_on(struct mmu *mmu)
-{
-    MMU_ASSERT_CURRENT(mmu);
-
-    if (!HANDLES_FREE_LIST) {
-        if (!allocate_handle_page(mmu, HANDLES_ALLOCATED_SIZE))
+    struct handle *new = *handle_freelist_ptr(t);
+    if (!new) {
+        if (!extend_handle_table(t))
             return NULL;
+        new = *handle_freelist_ptr(t);
     }
 
-    assert(HANDLES_FREE_LIST);
+    assert(new);
 
-    struct handle *new = HANDLES_FREE_LIST;
-    HANDLES_FREE_LIST = new->u.invalid.next;
+    *handle_freelist_ptr(t) = new->u.invalid.next;
     return new;
 }
 
-void handle_free(struct handle *h)
+void handle_free(struct thread *t, struct handle *h)
 {
-    handle_free_on(thread_get_mmu(thread_current()), h);
-}
-
-void handle_free_on(struct mmu *mmu, struct handle *h)
-{
-    MMU_ASSERT_CURRENT(mmu);
-
-    assert(h >= &HANDLE_TABLE[0] && h < &HANDLE_TABLE[MAX_HANDLES]);
+    assert(h >= &t->handle_table.handles[0] &&
+           h < &t->handle_table.handles[t->handle_table.num_handles]);
     assert(h->type != HANDLE_TYPE_INVALID);
 
-    handle_vtable[h->type]->unref(h);
+    if (h->type != HANDLE_TYPE_RESERVED)
+        handle_vtable[h->type]->unref(h);
 
     h->type = HANDLE_TYPE_INVALID;
-    h->u.invalid.next = HANDLES_FREE_LIST;
-    HANDLES_FREE_LIST = h;
+    h->u.invalid.next = *handle_freelist_ptr(t);
+    *handle_freelist_ptr(t) = h;
 
-    handle_dump_all();
+    handle_dump_all(t);
 
     // Note: if there are too many free handles, we should probably compactify
     //       the handle table and free unused pages. Since that is expensive,
-    //       it would actually better to leave this to some sort of background
+    //       it would possibly be better to leave this to some sort of background
     //       cleanup task or global OOM handling mechanism.
 }
 
-int64_t handle_add_or_free(struct handle *val)
-{
-    return handle_add_or_free_on(thread_get_mmu(thread_current()), val);
-}
-
-int64_t handle_add_or_free_on(struct mmu *mmu, struct handle *val)
+kern_handle handle_add_or_free(struct thread *t, struct handle *val)
 {
     if (val->type == HANDLE_TYPE_INVALID)
         return KERN_HANDLE_INVALID;
-    struct handle *new = handle_alloc_on(mmu);
+    struct handle *new = handle_alloc(t);
     if (!new || !handle_vtable[val->type]->ref(new, val)) {
         handle_vtable[val->type]->unref(val);
-        handle_free_on(mmu, new);
+        handle_free(t, new);
         return KERN_HANDLE_INVALID;
     }
-    handle_dump_all();
-    return handle_get_id(new);
+    handle_dump_all(t);
+    return handle_get_id(t, new);
 }
 
-void handle_dump_all(void)
+void handle_dump_all(struct thread *t)
 {
-    if (read_handle_type(&HANDLE_TABLE[0]) < 0) {
-        printf("No handle table mapped.\n");
+    if (!t->handle_table.num_handles) {
+        printf("No handle table allocated.\n");
         return;
     }
 
-    size_t num = HANDLES_ALLOCATED_SIZE / sizeof(struct handle);
-    for (size_t n = 0; n < num; n++) {
-        struct handle *h = &HANDLE_TABLE[n];
+    for (size_t n = 0; n < t->handle_table.num_handles; n++) {
+        struct handle *h = &t->handle_table.handles[n];
 
-        if (h->type)
+        if (h->type && h->type != HANDLE_TYPE_RESERVED)
             printf("%zu: %s\n", n, handle_vtable[h->type]->name);
     }
-    printf("Space for %zu handles allocated.\n", num);
+    printf("Space for %zu handles allocated.\n", t->handle_table.num_handles);
 }

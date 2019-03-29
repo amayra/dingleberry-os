@@ -6,5 +6,5 @@ _start:
     lla gp, __global_pointer$
 .option pop
     call crt_init
-    li a7, 2 /* SYS_DEBUG_STOP */
+    li t6, 2 /* SYS_DEBUG_STOP */
     ecall

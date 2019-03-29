@@ -69,49 +69,50 @@ static inline int kern_get_time(struct kern_timespec *t)
     return kern_call1(KERN_FN_GET_TIME, (uintptr_t)t);
 }
 
-static inline void *kern_mmap(uint64_t dst_handle, void *addr, size_t length,
-                              int flags, int handle, uint64_t offset)
+static inline void *kern_mmap(kern_handle dst, void *addr, size_t length,
+                              int flags, kern_handle handle, uint64_t offset)
 {
-    return (void *)kern_call6(KERN_FN_MMAP, dst_handle, (uintptr_t)addr,
+    return (void *)kern_call6(KERN_FN_MMAP, dst, (uintptr_t)addr,
                               length, flags, handle, offset);
 }
 
-static inline int kern_munmap(uint64_t dst_handle, void *addr, size_t length)
+static inline int kern_munmap(kern_handle dst, void *addr, size_t length)
 {
-    return kern_call3(KERN_FN_MUNMAP, dst_handle, (uintptr_t)addr, length);
+    return kern_call3(KERN_FN_MUNMAP, dst, (uintptr_t)addr, length);
 }
 
-static inline int kern_mprotect(uint64_t dst_handle, void *addr, size_t length,
+static inline int kern_mprotect(kern_handle dst, void *addr, size_t length,
                                 unsigned remove_flags, unsigned add_flags)
 {
-    return kern_call5(KERN_FN_MPROTECT, dst_handle, (uintptr_t)addr, length,
+    return kern_call5(KERN_FN_MPROTECT, dst, (uintptr_t)addr, length,
                       remove_flags, add_flags);
 }
 
-static inline int64_t kern_thread_create(int64_t aspace_handle, bool new_aspace)
+static inline kern_handle kern_thread_create(kern_handle aspace, bool new_aspace)
 {
-    return kern_call2(KERN_FN_THREAD_CREATE, aspace_handle, new_aspace);
+    return kern_call2(KERN_FN_THREAD_CREATE, aspace, new_aspace);
 }
 
-static inline int kern_thread_set_context(int64_t thread_handle,
+static inline int kern_thread_set_context(kern_handle thread,
                                           struct kern_thread_regs *regs)
 {
-    return kern_call2(KERN_FN_THREAD_SET_CONTEXT, thread_handle, (uintptr_t)regs);
+    return kern_call2(KERN_FN_THREAD_SET_CONTEXT, thread, (uintptr_t)regs);
 }
 
-static inline int kern_copy_aspace(int64_t src, int64_t dst, bool emulate_fork)
+static inline int kern_copy_aspace(kern_handle src, kern_handle dst,
+                                   bool emulate_fork)
 {
     return kern_call3(KERN_FN_COPY_ASPACE, src, dst, emulate_fork);
 }
 
-static inline int kern_close(int64_t handle)
+static inline int kern_close(kern_handle handle)
 {
     return kern_call1(KERN_FN_CLOSE, handle);
 }
 
-static inline int64_t kern_copy_handle(int64_t dst_handle, int64_t handle)
+static inline kern_handle kern_copy_handle(kern_handle dst, kern_handle handle)
 {
-    return kern_call2(KERN_FN_COPY_HANDLE, dst_handle, handle);
+    return kern_call2(KERN_FN_COPY_HANDLE, dst, handle);
 }
 
 static inline void kern_yield(void)

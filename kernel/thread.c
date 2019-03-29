@@ -122,7 +122,9 @@ static void boss_wake(void)
     assert(boss_thread);
 
     // This naive way works because we don't support SMP or preemption.
-    if (boss_thread->state != THREAD_STATE_RUNNABLE) {
+    if (boss_thread->state != THREAD_STATE_RUNNABLE &&
+        boss_thread != thread_current())
+    {
         assert(boss_thread->state == THREAD_STATE_WAIT_SLEEP);
 
         thread_set_state(boss_thread, THREAD_STATE_RUNNABLE);
@@ -218,11 +220,7 @@ void thread_set_aspace(struct thread *t, struct vm_aspace *aspace)
         struct vm_aspace_owners *list = vm_aspace_get_owners(t->aspace);
         LL_REMOVE(list, t, aspace_siblings);
         if (!list->head) {
-            // Before freeing the mmu struct, destroy the handle table, which
-            // is a terrible mess.
-            mmu_switch_to(t->mmu);
-            handle_table_destroy(t->mmu);
-            mmu_switch_to(thread_get_mmu(thread_current()));
+            handle_table_destroy(t);
 
             // Free aspace + mmu struct.
             vm_aspace_free(t->aspace);
@@ -231,6 +229,8 @@ void thread_set_aspace(struct thread *t, struct vm_aspace *aspace)
 
     if (aspace) {
         struct vm_aspace_owners *list = vm_aspace_get_owners(aspace);
+        if (list->head)
+            t->handle_table = list->head->handle_table;
         LL_APPEND(list, t, aspace_siblings);
     }
 
@@ -770,6 +770,7 @@ static void thread_handle_unref(struct handle *h)
     assert(h->u.thread->refcount > 0);
 
     h->u.thread->refcount -= 1;
+    h->type = HANDLE_TYPE_RESERVED;
     if (h->u.thread->refcount == 0)
         thread_set_state(h->u.thread, THREAD_STATE_DEAD);
 }
