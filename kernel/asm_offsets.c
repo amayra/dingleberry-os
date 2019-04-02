@@ -40,8 +40,6 @@ void unused(void) {
     OFFSET(struct thread, trap_sp)
     OFFSET(struct thread, trap_pc)
     OFFSET(struct thread, ipc_handle)
-    OFFSET(struct thread, ipc_receive_ext_inf)
-    OFFSET(struct thread, ipc_receive_ext_ptr)
     OFFSET(struct thread, ipc_list)
     OFFSET(struct thread, ipc_free_reply_handle)
     OFFSET(struct thread, ipc_info)
@@ -70,6 +68,14 @@ void unused(void) {
 
     OFFSET(struct ipc_listener, listeners)
     OFFSET(struct ipc_listener, waiters)
+
+    OFFSET(struct ipc_info, recv_flags)
+    OFFSET(struct ipc_info, data_ptr)
+    OFFSET(struct ipc_info, ret_code)
+    OFFSET(struct ipc_info, ret_handle)
+    OFFSET(struct ipc_info, ret_userdata)
+    OFFSET(struct ipc_info, payload)
+    SIZE(struct ipc_info)
 
     DEFINT(ASM_EXCEPTION_TYPE_KERNEL_LOAD)
     DEFINT(ASM_EXCEPTION_TYPE_USER_LOAD)

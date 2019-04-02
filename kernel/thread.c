@@ -303,7 +303,6 @@ static void thread_handle_timeout(struct thread *t)
     }
     default:
         // (must have been in a state that waits)
-        // (THREAD_STATE_WAIT_SLEEP can't use timeouts currently)
         abort();
     }
 }
@@ -367,9 +366,10 @@ void thread_set_state(struct thread *t, enum thread_state state)
         LL_REMOVE(&runnable_threads[t->priority], t, st_siblings);
         break;
     case THREAD_STATE_WAIT_FUTEX:
-    case THREAD_STATE_WAIT_SLEEP:
         LL_REMOVE(&waiting_threads, t, st_siblings);
         break;
+    case THREAD_STATE_WAIT_SLEEP:
+    case THREAD_STATE_WAIT_IPC:
     case THREAD_STATE_NO_CONTEXT:
     case THREAD_STATE_FINE:
         break;
@@ -385,9 +385,8 @@ void thread_set_state(struct thread *t, enum thread_state state)
         LL_APPEND(&runnable_threads[t->priority], t, st_siblings);
         break;
     case THREAD_STATE_WAIT_SLEEP:
+        break;
     case THREAD_STATE_WAIT_FUTEX: {
-        if (t->state == THREAD_STATE_WAIT_SLEEP)
-            t->wait_timeout_time = UINT64_MAX; // no timeout
         // Inserted in a sorted manner.
         struct thread *insert_before = NULL; // NULL => insert at end
         if (t->wait_timeout_time < UINT64_MAX) {
@@ -418,6 +417,7 @@ void thread_set_state(struct thread *t, enum thread_state state)
         boss_wake();
         break;
     case THREAD_STATE_FINE:
+    case THREAD_STATE_WAIT_IPC:
         break;
     case THREAD_STATE_NO_CONTEXT: // fallthrough: state can't be entered
     default:
@@ -691,6 +691,7 @@ static void boss_thread_fn(void *ctx)
             thread_destroy(deathrow_threads.head);
 
         // Wait again.
+        // TODO: reentrant boss_wake()s are missed
         thread_set_state(thread_current(), THREAD_STATE_WAIT_SLEEP);
         thread_reschedule();
     }

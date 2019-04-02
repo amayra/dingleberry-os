@@ -1,5 +1,12 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include "memory.h"
+
+#include <kernel/api.h>
+
 struct ipc_listener {
     // List of threads currently listening. These can receive IPC directly from
     // HANDLE_TYPE_IPC_TARGET ports.
@@ -20,9 +27,27 @@ struct ipc_listener {
     size_t refcount_targets;
 };
 
-// Slow path storage for IPC payload.
-struct ipc_info {
-    size_t payload[7]; // a0-a6
-};
-
 extern struct slob ipc_listener_slob;
+
+// Used to communicate with syscall asm stub. This is specifically for syscall
+// exit. Syscall entry uses fields in this struct when possible, but passes
+// entry-only values as ipc_entry() extra arguments.
+// Stack-aligned to make stack allocation in the asm easier.
+struct ipc_info {
+    // Receive buffer flags from userspace.
+    size_t recv_flags;
+    // Send/receive buffer pointer from userspace.
+    uintptr_t data_ptr;
+    // IPC operation return values (used for syscall exit).
+    int ret_code;
+    kern_handle ret_handle;
+    uintptr_t ret_userdata;
+    // Registers directly transferred.
+    size_t payload[8];
+}  __attribute__((aligned(STACK_ALIGNMENT)));
+
+// Called by ASM on IPC (unless the ASM fast path is taken). thread->ipc_info is
+// set to a stack allocated struct with some syscall parameters; the rest is
+// passed as function argument. Must update thread->ipc_info before return; the
+// caller returns the ipc_info contents via the syscall.
+void ipc_entry(kern_handle send, kern_handle recv, size_t send_flags);

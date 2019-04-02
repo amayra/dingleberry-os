@@ -95,20 +95,61 @@ static void *cont_thread(void *a)
     return NULL;
 }
 
+static void *ipc_thread(void *parg)
+{
+    kern_handle port = *(kern_handle *)parg;
+    size_t rep_flags;
+    void *rep_ud;
+    kern_handle rep_port;
+    size_t msg[KERN_IPC_REG_ARGS] = {3,4,5,6,7,8,9,10};
+    int r = kern_ipc_full(port, port, 0, 0, NULL,
+                          &rep_flags, &rep_ud, &rep_port, msg);
+    assert(r == 1);
+    assert(rep_ud == NULL);
+    assert(rep_port == 0);
+    printf("reply:\n");
+    for (int n = 0; n < KERN_IPC_REG_ARGS; n++)
+        printf("   a%d = %08zx\n", n, msg[n]);
+}
+
+
 int main(void)
 {
     // And this is why we did all this crap.
     printf("Hello world! (From userspace.)\n");
 
-    //int freq = kern_call0(KERN_FN_GET_TIMER_FREQ);
-    //printf("timer freq: %d\n", freq);
-
-    //*(volatile int *)0xdeadbeefd00dull=123;
-
     struct kern_timespec ts;
     int r = kern_get_time(&ts);
     assert(r >= 0);
     printf("it is now: %ld %ld\n", (long)ts.sec, (long)ts.nsec);
+
+    pthread_t res;
+
+    kern_handle li = kern_ipc_listener_create();
+    printf("listener: %ld\n", li);
+
+    kern_handle ta = kern_ipc_target_create(li, 0xA123456E);
+    printf("target: %ld\n", ta);
+
+    r = pthread_create(&res, NULL, ipc_thread, &ta);
+
+    printf("start wait ipc\n");
+    size_t req_flags;
+    void *req_ud;
+    kern_handle req_port;
+    size_t msg[KERN_IPC_REG_ARGS];
+    r = kern_ipc_full(0, li, 0, 0, NULL, &req_flags,
+                      &req_ud, &req_port, msg);
+    printf("ipc wait listen r=%d\n", r);
+    assert(r > 0);
+    printf("port: %ld ud: %p\n", req_port, req_ud);
+    for (int n = 0; n < KERN_IPC_REG_ARGS; n++)
+        printf("   a%d = %08zx\n", n, msg[n]);
+    size_t reply[KERN_IPC_REG_ARGS] = {0xDEAD, 0xBEEF, 0xBEEE, 0xF00D, 0x123, 0x456, 6, 7};
+    r = kern_ipc_full(req_port, 0, 0, 0, NULL, &req_flags,
+                      &req_ud, &req_port, reply);
+    printf("ipc send reply r=%d\n", r);
+    while(1);
 
 #if 0
     // Dummy futex call to wait a while
@@ -119,7 +160,6 @@ int main(void)
     printf("done\n");
 #endif
 
-    pthread_t res;
     r = pthread_create(&res, NULL, musl_thread, (void *)1234);
     printf("res: %d\n", r);
     assert(r == 0);

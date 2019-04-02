@@ -48,6 +48,16 @@
     INS s10, (BASE + 10 * 8)(BREG);     \
     INS s11, (BASE + 11 * 8)(BREG);
 
+#define ARG_REGS_LS(INS, BASE, BREG)    \
+    INS a0,  (BASE +  0 * 8)(BREG);     \
+    INS a1,  (BASE +  1 * 8)(BREG);     \
+    INS a2,  (BASE +  2 * 8)(BREG);     \
+    INS a3,  (BASE +  3 * 8)(BREG);     \
+    INS a4,  (BASE +  4 * 8)(BREG);     \
+    INS a5,  (BASE +  5 * 8)(BREG);     \
+    INS a6,  (BASE +  6 * 8)(BREG);     \
+    INS a7,  (BASE +  7 * 8)(BREG);
+
 .section ".text", "ax"
 
 .balign 32
@@ -85,6 +95,8 @@ trap:
     bnez sp, slow_trap
 
     /* Setup kernel stack. */
+    /* Note that the IPC path expects that the kernel stack is unused for
+     * normal syscall entry/return. */
     mv sp, tp
 
     /* Save the normal syscall-saved registers. */
@@ -112,6 +124,14 @@ trap:
 
     /* Syscall 0, IPC, is special: different ABI, asm fast path. */
     bnez t6, normal_syscall
+
+    /* Allocate ipc_info and save source thread IPC receive parameters.
+     * (Optimization note: could skip some of this if only asm path is taken,
+     * but this is cleaner when making asm/C paths interoperate.) */
+    addi sp, sp, -IPC_INFO_SIZE
+    sd t3, (IPC_INFO_RECV_FLAGS)(sp)
+    sd t4, (IPC_INFO_DATA_PTR)(sp)
+    sd sp, (THREAD_IPC_INFO)(tp)
 
     /* Check for special send flags. Currently, fast-path does register-only
      * transfer, so all fields must be 0. */
@@ -205,18 +225,7 @@ ipc_send_wait:
     /* Unlink target thread from ipc_listener */
     ld s5, (THREAD_IPC_LIST)(s3)
     sd s5, (IPC_LISTENER_LISTENERS)(s1)
-    /* Return */
-    j ipc_receive_common
-
-    /* Call slow path C code for arbitrary IPC. */
-ipc_slow_path:
-    /*...*/
-    call abort
-
-    /* Context switch target if C code switches to a receiving thread. */
-ipc_receive_slowpath:
-    /* ... */
-    call abort
+    /* Return; fallthrough to ipc_receive_common */
 
     /* Common trailing code for fast path.
      *  s3: target thread */
@@ -232,22 +241,18 @@ ipc_receive_common:
     csrw satp, s9
     sfence.vma zero, zero
 1:
-    /* Save source thread IPC receive parameters. */
-    sd t3, (THREAD_IPC_RECEIVE_EXT_INF)(tp)
-    sd t4, (THREAD_IPC_RECEIVE_EXT_PTR)(tp)
     /* Change source thread state to waiting for IPC. */
     li s5, THREAD_STATE_WAIT_IPC
     sw s5, (THREAD_STATE)(tp)
     /* Change target thread state to running. */
     li s5, THREAD_STATE_FINE
     sw s5, (THREAD_STATE)(s3)
-    /* Save context for sender thread. */
+    /* Setup sender thread context. This may be ignored when fast path is used. */
     la s5, ipc_receive_slowpath
     sd s5, (THREAD_KERNEL_PC)(tp)
     sd sp, (THREAD_KERNEL_SP)(tp)
-    /* Since we use fast path, target pc and sp are just discarded (yep, the
-     * kernel stack is unused for this). The invariant for the
-     * THREAD_STATE_WAIT_IPC state allows this. */
+    /* Since we use fast path, target pc and sp are just discarded. This is
+     * specifically allowed by the THREAD_STATE_WAIT_IPC state invariants. */
     /* Actual context switch. */
     mv tp, s3
     csrw sscratch, tp
@@ -260,6 +265,55 @@ ipc_receive_common:
     mv t4, zero
     mv t5, zero
     li t6, 1 /* success; IPC received */
+    j return_to_user
+
+    /* Call slow path C code for arbitrary IPC.
+     * sp must point to allocated ipc_info; syscall regs untouched. */
+ipc_slow_path:
+    ARG_REGS_LS(sd, IPC_INFO_PAYLOAD, sp)
+    mv a0, t0
+    mv a1, t1
+    mv a2, t2
+    call ipc_entry
+    /* Fallthrough to ipc_receive_slowpath. */
+    /* Context switch target if C code switches to a receiving thread. */
+ipc_receive_slowpath:
+    /* Sanity check. */
+    /*ld t0, (THREAD_IPC_INFO)(tp)
+    beq s0, sp, 1f
+    call abort
+1:*/
+    ld t4, (THREAD_IPC_INFO)(tp)
+    /* Return code. Note that >0 means IPC received. */
+    ld t6, (IPC_INFO_RET_CODE)(sp)
+    blez t6, 1f
+    /* Load IPC receive return regs. */
+    ARG_REGS_LS(ld, IPC_INFO_PAYLOAD, t4)
+    ld t0, (IPC_INFO_RET_HANDLE)(t4)
+    ld t1, (IPC_INFO_RET_USERDATA)(t4)
+    ld t3, (IPC_INFO_RECV_FLAGS)(t4)
+    j 2f
+1:
+    /* Clear clobbered regs. */
+    mv a1, zero
+    mv a2, zero
+    mv a3, zero
+    mv a4, zero
+    mv a5, zero
+    mv a6, zero
+    mv a7, zero
+    /* t* used for return values */
+    mv t0, zero
+    mv t1, zero
+    mv t3, zero
+    mv t6, zero
+2:
+    /* t* that are clobbered */
+    mv t2, zero
+    mv t4, zero
+    mv t5, zero
+    /* Clear ipc_info - unnecessary, but good for debugging. */
+    sd zero, (THREAD_IPC_INFO)(tp)
     j return_to_user
 
 normal_syscall:

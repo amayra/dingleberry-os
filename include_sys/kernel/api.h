@@ -148,17 +148,17 @@ typedef long kern_handle;
 //    fit into a temporary kernel buffer. This is mostly so that we can do naive
 //    implementations of read()/write() as IPC for now, and don't run out of
 //    space for arguments for complicated RPCs in general.
-//  - This includes a forced header, so that nobody tries to use it the "wrong"
-//    way. Some L4 kernels put extra arguments in a "thread control block";
-//    this is slightly more complex, but at least doesn't need extra cooperation
-//    from the libc and kernel.
+//  - Trying to transfer data via registers is probably worthless, depending on
+//    actual overhead incurred by IPC (and register transfer just adds
+//    complexity), on the other hand, even if worthless, it could simplify stub
+//    code, or reduce stub code size (for typical RPC cases).
 // TODO: this wall of text doesn't really belong here.
 //
 // This uses a different ABI from other syscalls. The reason for this is stub
 // efficiency and freeing up registers for IPC transfer. The only common part is
 // that the syscall number is passed in t6.
 //
-//  a0-a6: payload, i.e. user data transferred with IPC. All these registers are
+//  a0-a7: payload, i.e. user data transferred with IPC. All these registers are
 //         always transferred, and the caller may need to clear unused registers
 //         to avoid data leakage.
 //
@@ -189,7 +189,7 @@ typedef long kern_handle;
 //  - KERN_HANDLE_INVALID
 // All other cases are errors.
 //
-// t2 and t3 are integers whose contents are reflected by struct kern_ipc_flags.
+// t2 and t3 are integers whose layouts are defined as bit fields (see below).
 // Depending on these flags, t4 is a pointer that points to memory that is
 // further involved with the IPC transfer (such as extra bytes to send/receive).
 // This is called extra message data pointer/area, and its contents depends on
@@ -223,61 +223,61 @@ typedef long kern_handle;
 // the client IPC syscall return with an error.
 #define KERN_FN_IPC                     0
 
+// Direct registers which can be transferred.
+#define KERN_IPC_REG_ARGS               8
+
 // Arguments for extended IPC. This reflects the contents of the IPC flags
-// registers. (All 0 is equivalent to no extra actions performed.)
-struct kern_ipc_flags {
-    // Number of register-sized words in the extra message data. This extends the
-    // number of bytes that can be transferred per IPC to slightly above 64KB.
-    // If the IPC transfers a non-aligned number of bytes, it needs to pad the
-    // buffer to the next word boundary, and store the number of logical bytes
-    // to transfer in the message itself.
-    // For sending: this contains the exact amount of extra units that should be
-    // read by the kernel and transferred to the receiver. If the receiver's
-    // buffer is smaller, the transfer is cut short, but succeeds, and the
-    // receiver is signaled by setting a flag.
-    // For receiving: maximum amount of extra units the kernel should copy from
-    // a sender. On syscall return, the field is set to the number of copied
-    // units. If the sender's count was higher, KERN_FLAG_IPC_MSG_OVERFLOW is
-    // set in the flags field.
-    // The kernel may abort an IPC operation in the middle, and thus overwrite
-    // some of the msg target buffer even on failure and without indication that
-    // this happened.
-    uint8_t msg_count;
+// registers (t2/t3). (All 0 is equivalent to no extra actions performed.)
 
-    // Number of register-sized words that follow the message data within the
-    // extra message data area. The IPC transfer can copy the handles into the
-    // receiver's address space as if KERN_FN_COPY_HANDLE were called for them.
-    // The receiver's handle values will change. Only up to 255 handles can be
-    // transferred.
-    // Invalid handles are not allowed and cause an error, except the special
-    // value KERN_HANDLE_INVALID is allowed and copied as-is.
-    // Otherwise, sending and receiving works like with msg_count. Overflows
-    // are flagged with KERN_FLAG_IPC_H_OVERFLOW instead. Overflowing handles
-    // are not added to the receiver's handle table.
-    // For receiving: note that the first returned handle is written after the
-    // last returned msg word, i.e. the start of the handles depends on the
-    // number of words returned by the IPC.
-    // Concurrency considerations: if the kernel allows other threads to run
-    // during the copy (preemptive kernel and/or SMP), userspace may observe
-    // handles coming into existence, or getting deleted again on failure. If,
-    // in this case, another thread destroy a kernel-created handle, and another
-    // handle is allocated in its place, and the IPC operations fails due to
-    // another reason later, the kernel will delete this handle anyway while
-    // attempting to roll back the IPC operation.
-    uint8_t handle_count;
+// Number of register-sized words in the extra message data. This extends the
+// number of bytes that can be transferred per IPC to slightly above 64KB.
+// If the IPC transfers a non-aligned number of bytes, it needs to pad the
+// buffer to the next word boundary, and store the number of logical bytes
+// to transfer in the message itself.
+// For sending: this contains the exact amount of extra units that should be
+// read by the kernel and transferred to the receiver. If the receiver's
+// buffer is smaller, the transfer is cut short, but succeeds, and the
+// receiver is signaled by setting a flag.
+// For receiving: maximum amount of extra units the kernel should copy from
+// a sender. On syscall return, the field is set to the number of copied
+// units. If the sender's count was higher, KERN_FLAG_IPC_MSG_OVERFLOW is
+// set in the flags field.
+// The kernel may abort an IPC operation in the middle, and thus overwrite
+// some of the msg target buffer even on failure and without indication that
+// this happened.
+#define KERN_IPC_MSG_COUNT_SHIFT        0
+#define KERN_IPC_MSG_COUNT_SIZE         8
 
-    // KERN_FLAG_IPC_* bits. This should be set to 0 by the user.
-    uint8_t flags;
+// Number of register-sized words that follow the message data within the
+// extra message data area. The IPC transfer can copy the handles into the
+// receiver's address space as if KERN_FN_COPY_HANDLE were called for them.
+// The receiver's handle values will change. Only up to 255 handles can be
+// transferred.
+// Invalid handles are not allowed and cause an error, except the special
+// value KERN_HANDLE_INVALID is allowed and copied as-is.
+// Otherwise, sending and receiving works like with msg_count. Overflows
+// are flagged with KERN_FLAG_IPC_H_OVERFLOW instead. Overflowing handles
+// are not added to the receiver's handle table.
+// For receiving: note that the first returned handle is written after the
+// last returned msg word, i.e. the start of the handles depends on the
+// number of words returned by the IPC.
+// Concurrency considerations: if the kernel allows other threads to run
+// during the copy (preemptive kernel and/or SMP), userspace may observe
+// handles coming into existence, or getting deleted again on failure. If,
+// in this case, another thread destroy a kernel-created handle, and another
+// handle is allocated in its place, and the IPC operations fails due to
+// another reason later, the kernel will delete this handle anyway while
+// attempting to roll back the IPC operation.
+#define KERN_IPC_HANDLE_COUNT_SHIFT     8
+#define KERN_IPC_HANDLE_COUNT_SIZE      8
 
-    // Padding to register size. Set to 0; future extensions may add new fields.
-    uint8_t pad0[sizeof(size_t) - 3];
-} __attribute__((aligned(sizeof(size_t))));
+#define KERN_IPC_FLAGS_MASK             (~(uint64_t)((1 << 16) - 1))
 
-// Overflow flags; these are set in kern_ipc_flags.flags if an IPC receive
+// Overflow flags; these are set in in the IPC flags if an IPC receive
 // operation successfully returns, but some sender-provided data could not be
 // copied due to the receiver not providing enough space.
-#define KERN_FLAG_IPC_MSG_OVERFLOW  (1 << 0)
-#define KERN_FLAG_IPC_H_OVERFLOW    (1 << 1)
+#define KERN_FLAG_IPC_MSG_OVERFLOW      (1 << 16)
+#define KERN_FLAG_IPC_HANDLE_OVERFLOW   (1 << 17)
 
 // Create a new listener port for IPC. The resulting handle can be passed as
 // IPC receive handle, or to create new target ports with

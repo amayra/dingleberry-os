@@ -44,7 +44,8 @@ enum thread_state {
     //  - if the ipc_handle is of type HANDLE_TYPE_IPC_LISTENER, the thread is
     //    linked into ipc_listener.listeners/thread.ipc_list
     //  - thread can return directly to userspace, instead of context-switching
-    //    through kernel_pc
+    //    through kernel_pc; kernel_pc always points to ipc_receive_slowpath,
+    //    and fast path may ignore it
     //  - when context switching to the thread normally, thread.ipc_info must be
     //    set before (?)
     //  - waker must unlink the reply etc.

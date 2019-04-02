@@ -125,6 +125,7 @@ struct handle *handle_alloc(struct thread *t)
     assert(new);
 
     *handle_freelist_ptr(t) = new->u.invalid.next;
+    new->type = HANDLE_TYPE_RESERVED;
     return new;
 }
 

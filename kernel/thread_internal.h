@@ -55,16 +55,14 @@ struct thread {
     // an unrelated syscall, there is enough information to update all threads
     // waiting on it).
     kern_handle ipc_handle;
-    // User information for receiving (actually, raw t3/t4 contents), for
-    // THREAD_STATE_WAIT_IPC state.
-    size_t ipc_receive_ext_inf;
-    size_t ipc_receive_ext_ptr;
     // THREAD_STATE_WAIT_IPC / THREAD_STATE_WAIT_IPC_SEND siblings
     struct thread *ipc_list;
     // Saved reply handle. Only valid for ipc_handle==HANDLE_TYPE_IPC_LISTENER.
     // Avoids going though alloc/dealloc.
     kern_handle ipc_free_reply_handle;
-    // Slow path data for IPC.
+    // Used to return IPC arguments for syscall return. (Technically, the field
+    // is redundant, as the struct is always allocated on the same stack
+    // position of the thread. The field is used for clarity.)
     struct ipc_info *ipc_info;
 
     // See mmu_get_satp(); used by asm.
@@ -107,7 +105,8 @@ struct thread {
 
     // State-specific siblings. E.g.:
     //  THREAD_STATE_RUNNABLE: runnable threads sorted by priority
-    //  THREAD_STATE_WAIT_*: waiting threads sorted by timeout
+    //  THREAD_STATE_WAIT_FUTEX:
+    //      waiting threads sorted by timeout
     struct thread_list_node st_siblings;
 
     // Start of the thread allocation; implies stack size and total allocation
