@@ -1,5 +1,3 @@
-// Source: musl (slightly edited)
-
 #ifndef _STDLIB_H
 #define _STDLIB_H
 
@@ -137,6 +135,7 @@ void lcong48 (unsigned short [7]);
 #endif
 
 #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+#include <alloca.h>
 char *mktemp (char *);
 int mkstemps (char *, int);
 int mkostemps (char *, int, int);

@@ -293,7 +293,6 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 
 	if (ret < 0) {
 		a_dec(&libc.threads_minus_1);
-        printf("oh on!!!!!!!!!!!!!1111111\n");
 		if (map) __munmap(map, size);
 		return EAGAIN;
 	}

@@ -100,11 +100,9 @@ char *gets(char *);
 int fputs(const char *__restrict, FILE *__restrict);
 int puts(const char *);
 
-__attribute__((format(printf, 1, 2)))
 int printf(const char *__restrict, ...);
 int fprintf(FILE *__restrict, const char *__restrict, ...);
 int sprintf(char *__restrict, const char *__restrict, ...);
-__attribute__((format(printf, 3, 4)))
 int snprintf(char *__restrict, size_t, const char *__restrict, ...);
 
 int vprintf(const char *__restrict, __isoc_va_list);
