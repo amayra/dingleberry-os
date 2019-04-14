@@ -129,13 +129,15 @@ trap:
      * (Optimization note: could skip some of this if only asm path is taken,
      * but this is cleaner when making asm/C paths interoperate.) */
     addi sp, sp, -IPC_INFO_SIZE
-    sd t3, (IPC_INFO_RECV_FLAGS)(sp)
-    sd t4, (IPC_INFO_DATA_PTR)(sp)
+    sd t2, (IPC_INFO_ARGS)(sp)
     sd sp, (THREAD_IPC_INFO)(tp)
 
     /* Check for special send flags. Currently, fast-path does register-only
      * transfer, so all fields must be 0. */
-    bnez t2, ipc_slow_path
+    /* TODO: check t2 for advanced sending and take fast-path anyway */
+    /*       actually, copy the entire kern_ipc_args thing (meh) */
+    /*bnez t2, ipc_slow_path*/
+    j ipc_slow_path
 
     /* Check t0 handle for type. */
     /* Check overflow and compute handle address. */
@@ -173,11 +175,12 @@ trap:
     beqz s3, ipc_slow_path
     /* Take slow path if trivial freeing of reply handle doesn't work (avoids
      * 3 more asm instructions in exchange for taking slow path). */
-    ld s4, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
+    ld s4, (THREAD_IPC_FREE_HANDLE)(tp)
     bnez s4, ipc_slow_path
     /* Now we know the IPC operation will succeed in all cases. */
+    call abort
     /* Free the reply handle; store it for the next receive operation. */
-    sd s0, (THREAD_IPC_FREE_REPLY_HANDLE)(tp)
+    sd s0, (THREAD_IPC_FREE_HANDLE)(tp)
     /* Set wait handle. */
     sd t1, (THREAD_IPC_HANDLE)(tp)
     /* Put source thread into listener list. */
@@ -206,15 +209,16 @@ ipc_send_wait:
      * to access the target thread handle table, which would have to happen
      * after address space switch, which would make handling allocation failure
      * slightly more messy. */
-    ld s4, (THREAD_IPC_FREE_REPLY_HANDLE)(s3)
+    ld s4, (THREAD_IPC_FREE_HANDLE)(s3)
     beqz s4, ipc_slow_path
     /* Now we know the IPC operation will succeed in all cases. */
+    call abort
     /* Set wait handle. */
     sd t1, (THREAD_IPC_HANDLE)(tp)
     /* Load user_data (to be returned to user). */
     ld t1, (HANDLE_U_IPC_TARGET_USER_DATA)(s0)
     /* We're going to use the reply handle. */
-    sd zero, (THREAD_IPC_FREE_REPLY_HANDLE)(s3)
+    sd zero, (THREAD_IPC_FREE_HANDLE)(s3)
     /* Reply handle (to be returned to user)). */
     sub t0, s4, s11
     srli t0, t0, HANDLE_SIZE_LOG
@@ -261,7 +265,7 @@ ipc_receive_common:
      *  t0, t1: specific IPC return values
      *  ra: clobbered by return code */
     mv t2, zero
-    mv t3, zero /* receive flags all 0 due to fastpath */
+    mv t3, zero
     mv t4, zero
     mv t5, zero
     li t6, 1 /* success; IPC received */
@@ -273,16 +277,10 @@ ipc_slow_path:
     ARG_REGS_LS(sd, IPC_INFO_PAYLOAD, sp)
     mv a0, t0
     mv a1, t1
-    mv a2, t2
     call ipc_entry
     /* Fallthrough to ipc_receive_slowpath. */
     /* Context switch target if C code switches to a receiving thread. */
 ipc_receive_slowpath:
-    /* Sanity check. */
-    /*ld t0, (THREAD_IPC_INFO)(tp)
-    beq s0, sp, 1f
-    call abort
-1:*/
     ld t4, (THREAD_IPC_INFO)(tp)
     /* Return code. Note that >0 means IPC received. */
     ld t6, (IPC_INFO_RET_CODE)(sp)
@@ -291,7 +289,6 @@ ipc_receive_slowpath:
     ARG_REGS_LS(ld, IPC_INFO_PAYLOAD, t4)
     ld t0, (IPC_INFO_RET_HANDLE)(t4)
     ld t1, (IPC_INFO_RET_USERDATA)(t4)
-    ld t3, (IPC_INFO_RECV_FLAGS)(t4)
     j 2f
 1:
     /* Clear clobbered regs. */
@@ -305,11 +302,11 @@ ipc_receive_slowpath:
     /* t* used for return values */
     mv t0, zero
     mv t1, zero
-    mv t3, zero
     mv t6, zero
 2:
     /* t* that are clobbered */
     mv t2, zero
+    mv t3, zero
     mv t4, zero
     mv t5, zero
     /* Clear ipc_info - unnecessary, but good for debugging. */

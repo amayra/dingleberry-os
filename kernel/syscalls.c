@@ -13,53 +13,6 @@
 
 #include <kernel/api.h>
 
-struct memcpy_params {
-    void *dst, *src;
-    size_t size;
-};
-
-static void do_copy_user(void *ctx)
-{
-    struct memcpy_params *p = ctx;
-    memcpy(p->dst, p->src, p->size);
-}
-
-static bool copy_user_(void *dst, void *src, size_t size)
-{
-    struct memcpy_params p = {dst, src, size};
-    asm volatile("csrrs zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
-    bool ok = run_trap_pagefaults(0, MMU_ADDRESS_LOWER_MAX, do_copy_user, &p);
-    asm volatile("csrrc zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
-    return ok;
-}
-
-static bool valid_user_address(uintptr_t user_addr, size_t size)
-{
-    return size <= MMU_ADDRESS_LOWER_MAX &&
-        user_addr <= MMU_ADDRESS_LOWER_MAX + 1 - size;
-}
-
-// Copy from/to userspaces addresses. The user_src address is sanitized, and
-// faults to it are caught. On a fault, false is returned, and *dst might have
-// been partially written to.
-static bool copy_from_user(void *dst, uintptr_t user_src, size_t size)
-{
-    if (!valid_user_address(user_src, size))
-        return false;
-    assert((uintptr_t)dst >= KERNEL_SPACE_BASE); // just a kernel code bug
-
-    return copy_user_(dst, (void *)user_src, size);
-}
-
-static bool copy_to_user(uintptr_t user_dst, void *src, size_t size)
-{
-    if (!valid_user_address(user_dst, size))
-        return false;
-    assert((uintptr_t)src >= KERNEL_SPACE_BASE); // just a kernel code bug
-
-    return copy_user_((void *)user_dst, src, size);
-}
-
 // Pseudo entry for out of bounds syscall values. (Called from trap.S.)
 size_t syscall_unavailable(size_t nr)
 {

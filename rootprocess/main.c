@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <kernel/api.h>
+#include <kernel/ipc_stubs.h>
 #include <kernel/stubs.h>
 
 int foo[4097];
@@ -98,18 +99,17 @@ static void *cont_thread(void *a)
 static void *ipc_thread(void *parg)
 {
     kern_handle port = *(kern_handle *)parg;
-    size_t rep_flags;
     void *rep_ud;
     kern_handle rep_port;
-    size_t msg[KERN_IPC_REG_ARGS] = {3,4,5,6,7,8,9,10};
-    int r = kern_ipc_full(port, port, 0, 0, NULL,
-                          &rep_flags, &rep_ud, &rep_port, msg);
-    assert(r == 1);
-    assert(rep_ud == NULL);
-    assert(rep_port == 0);
+    size_t msg[KERN_IPC_REG_ARGS + 2] = {3,4,5,6,7,8,9,10, 0xaabb, 0xccdd};
+    size_t rmsg[KERN_IPC_REG_ARGS + 10] = {0};
+    int r = kern_ipc_call(port, msg, sizeof(msg), rmsg, sizeof(rmsg));
+    printf("r=%d\n", r);
+    assert(r >= 0);
     printf("reply:\n");
-    for (int n = 0; n < KERN_IPC_REG_ARGS; n++)
-        printf("   a%d = %08zx\n", n, msg[n]);
+    for (int n = 0; n < r / sizeof(size_t); n++)
+        printf("   a%d = %08zx\n", n, rmsg[n]);
+    return NULL;
 }
 
 
@@ -133,21 +133,31 @@ int main(void)
 
     r = pthread_create(&res, NULL, ipc_thread, &ta);
 
+    //sleep(1);
     printf("start wait ipc\n");
-    size_t req_flags;
     void *req_ud;
     kern_handle req_port;
     size_t msg[KERN_IPC_REG_ARGS];
-    r = kern_ipc_full(0, li, 0, 0, NULL, &req_flags,
-                      &req_ud, &req_port, msg);
+    size_t mem_recv_buf[123];
+    struct kern_ipc_args args = {
+        .recv_size_max = sizeof(mem_recv_buf),
+        .recv = mem_recv_buf,
+    };
+    r = kern_ipc_full(0, li, &args, &req_ud, &req_port, msg);
     printf("ipc wait listen r=%d\n", r);
     assert(r > 0);
-    printf("port: %ld ud: %p\n", req_port, req_ud);
+    printf("port: %ld ud: %p memsz=%zd\n", req_port, req_ud, args.recv_size);
     for (int n = 0; n < KERN_IPC_REG_ARGS; n++)
         printf("   a%d = %08zx\n", n, msg[n]);
+    for (int n = 0; n < args.recv_size / sizeof(size_t); n++)
+        printf("   m%d = %08zx\n", n, mem_recv_buf[n]);
     size_t reply[KERN_IPC_REG_ARGS] = {0xDEAD, 0xBEEF, 0xBEEE, 0xF00D, 0x123, 0x456, 6, 7};
-    r = kern_ipc_full(req_port, 0, 0, 0, NULL, &req_flags,
-                      &req_ud, &req_port, reply);
+    size_t mem_send_buf[2] = {0xeeff, 0xffdd};
+    struct kern_ipc_args rargs = {
+        .send_size = sizeof(mem_send_buf),
+        .send = mem_send_buf,
+    };
+    r = kern_ipc_full(req_port, 0, &rargs, &req_ud, &req_port, reply);
     printf("ipc send reply r=%d\n", r);
     while(1);
 

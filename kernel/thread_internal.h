@@ -57,13 +57,14 @@ struct thread {
     kern_handle ipc_handle;
     // THREAD_STATE_WAIT_IPC / THREAD_STATE_WAIT_IPC_SEND siblings
     struct thread *ipc_list;
-    // Saved reply handle. Only valid for ipc_handle==HANDLE_TYPE_IPC_LISTENER.
-    // Avoids going though alloc/dealloc.
-    kern_handle ipc_free_reply_handle;
     // Used to return IPC arguments for syscall return. (Technically, the field
     // is redundant, as the struct is always allocated on the same stack
     // position of the thread. The field is used for clarity.)
     struct ipc_info *ipc_info;
+    // If non-0, must be a HANDLE_TYPE_RESERVED handle. Typically used to create
+    // a temporary reply handle, without having to go though handle allocation
+    // for typical IPC calls.
+    kern_handle ipc_free_handle;
 
     // See mmu_get_satp(); used by asm.
     uint64_t mmu_satp;

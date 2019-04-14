@@ -1,11 +1,17 @@
 #pragma once
 
+/*
+ * Helper inline functions to make syscalls.
+ */
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "api.h"
 
+// Generic syscall, max. argument count, assuming only 1 return argument. This
+// can handle all syscalls, except IPC.
 static inline size_t kern_call8(size_t fn, size_t a0, size_t a1, size_t a2,
                                 size_t a3, size_t a4, size_t a5, size_t a6,
                                 size_t a7)
@@ -130,21 +136,11 @@ static inline kern_handle kern_ipc_target_create(kern_handle listener, size_t ud
     return kern_call2(KERN_FN_IPC_TARGET_CREATE, listener, ud);
 }
 
-
-//  t0:     send port handle (or inv.)      new reply handle (or inv.)
-//  t1:     receive port handle (or inv.)   port userdata (or 0)
-//  t2:     send flags                      (clobbered)
-//  t3:     receive flags                   updated receive flags
-//  t4:     extra message data ptr.         (clobbered)
-//  t5:     (clobbered)                     (clobbered)
-//  t6:     KERN_FN_IPC                     0/1 on success, otherwise error code
-
 // "Slow" IPC wrapper, which involves a lot of data shuffling that inflates
-// code size and reduces performance. Pointer args (except msg_reg) are optional.
+// code size and reduces performance. On the other hand, it supports all
+// features of the syscall.
 static inline int kern_ipc_full(kern_handle send_port, kern_handle recv_port,
-                                size_t send_flags, size_t recv_flags,
-                                void *extra_data,
-                                size_t *recv_flags_ret,
+                                struct kern_ipc_args *args,
                                 void **ud_ret,
                                 kern_handle *reply_port,
                                 size_t msg_reg[KERN_IPC_REG_ARGS])
@@ -159,13 +155,10 @@ static inline int kern_ipc_full(kern_handle send_port, kern_handle recv_port,
     register size_t r_a7 __asm("a7") = msg_reg[7];
     register size_t r_t0 __asm("t0") = send_port;
     register size_t r_t1 __asm("t1") = recv_port;
-    register size_t r_t2 __asm("t2") = send_flags;
-    register size_t r_t3 __asm("t3") = recv_flags;
-    register size_t r_t4 __asm("t4") = (uintptr_t)extra_data;
+    register size_t r_t2 __asm("t2") = (uintptr_t)args;
     register size_t r_t6 __asm("t6") = KERN_FN_IPC;
     __asm volatile("ecall"
         : "=r" (r_a0),
-          // Clobber the rest.
           "=r" (r_a1),
           "=r" (r_a2),
           "=r" (r_a3),
@@ -176,8 +169,6 @@ static inline int kern_ipc_full(kern_handle send_port, kern_handle recv_port,
           "=r" (r_t0),
           "=r" (r_t1),
           "=r" (r_t2),
-          "=r" (r_t3),
-          "=r" (r_t4),
           "=r" (r_t6)
         : "r"  (r_a0),
           "r"  (r_a1),
@@ -190,11 +181,9 @@ static inline int kern_ipc_full(kern_handle send_port, kern_handle recv_port,
           "r"  (r_t0),
           "r"  (r_t1),
           "r"  (r_t2),
-          "r"  (r_t3),
-          "r"  (r_t4),
           "r"  (r_t6)
         // Clobber all other non-callee-saved/immutable registers.
-        : "ra", "t5", "memory");
+        : "ra", "t3", "t4", "t5", "memory");
     msg_reg[0] = r_a0;
     msg_reg[1] = r_a1;
     msg_reg[2] = r_a2;
@@ -206,8 +195,6 @@ static inline int kern_ipc_full(kern_handle send_port, kern_handle recv_port,
     if (reply_port)
         *reply_port = r_t0;
     if (ud_ret)
-        *ud_ret = r_t1;
-    if (recv_flags_ret)
-        *recv_flags_ret = r_t3;
+        *ud_ret = (void *)r_t1;
     return r_t6;
 }

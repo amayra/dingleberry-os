@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,10 +15,10 @@ struct kern_timespec {
     uint32_t nsec;
 };
 
-// A kernel handle is a igned register sized type. This is always ptrdiff_t
+// A kernel handle is a signed register sized type. This is always ptrdiff_t
 // (probably), which is always long (probably). Since the intent is different
-// (it's not a difference of pointers), and long is not "always" register sized,
-// hide it behind a typedef.
+// from ptrdiff_t (it's not a difference of pointers or an offset), and long is
+// not "always" register sized, hide it behind a typedef.
 typedef long kern_handle;
 
 // An invalid handle is 0 to ensure that handle fields are initialized to
@@ -166,10 +167,8 @@ typedef long kern_handle;
 //          <in>                            <out>
 //  t0:     send port handle (or inv.)      new reply handle (or inv.)
 //  t1:     receive port handle (or inv.)   port userdata (or 0)
-//  t2:     send flags                      (clobbered)
-//  t3:     receive flags                   updated receive flags
-//  t4:     extra message data ptr.         (clobbered)
-//  t5:     (clobbered)                     (clobbered)
+//  t2:     kern_ipc_args ptr.              (clobbered)
+//  t3-t5:  (clobbered)                     (clobbered)
 //  t6:     KERN_FN_IPC                     0/1 on success, otherwise error code
 //
 // t6 is guaranteed to be 0 or 1 on success. Success is only wrt. the IPC
@@ -189,12 +188,7 @@ typedef long kern_handle;
 //  - KERN_HANDLE_INVALID
 // All other cases are errors.
 //
-// t2 and t3 are integers whose layouts are defined as bit fields (see below).
-// Depending on these flags, t4 is a pointer that points to memory that is
-// further involved with the IPC transfer (such as extra bytes to send/receive).
-// This is called extra message data pointer/area, and its contents depends on
-// the flags. It can be used for both sending and receiving (the syscall invoker
-// decides what operations are possible).
+// t2 is either NULL or a pointer to struct kern_ipc_args (see below).
 //
 // If t0 is a target port and t0==t1, a typical send-wait-reply operation is
 // performed. As soon as a server thread waits on the connected listener handle,
@@ -207,77 +201,86 @@ typedef long kern_handle;
 // If t0 is valid, the kernel reads extra IPC send arguments from t1. If t1 is
 // valid, the kernel writes extra IPC receive arguments to t1.
 //
-// If success is returned, t0, t1, and t3 are always set. If t1 was a listener
+// If success is returned, t0, and t1 are always set. If t1 was a listener
 // port, t0 is set a reply handle, and t1 is set to the userdata that was set on
 // the target port that was used to send the IPC. The userdata is the only way
-// to identify the sender. If t2 was something else, t0 is set to
+// to identify the sender. If t1 was something else, t0 is set to
 // KERN_HANDLE_INVALID, and t1 to 0.
-// If a receive operation was performed, t3 contains updated receive flags,
-// which reflect how much was actually received, and also if something could
-// not be received.
+// If a receive operation was performed, and t2 was not NULL, certain fields in
+// the struct may be updated to reflect how much was received. Note that the
+// fast path may not write to t2 at all (thus the requirement for initializing
+// certain kernel-written fields to 0 by the caller).
 //
-// If both t0 and t2 are set to KERN_HANDLE_INVALID, the syscall does nothing
+// If both t0 and t1 are set to KERN_HANDLE_INVALID, the syscall does nothing
 // and returns with t6=0.
 //
 // Reply port handles cannot be duplicated. Closing a reply port handle makes
 // the client IPC syscall return with an error.
 #define KERN_FN_IPC                     0
 
-// Direct registers which can be transferred.
+// Number of registers which are transferred as direct payload in IPC.
 #define KERN_IPC_REG_ARGS               8
 
-// Arguments for extended IPC. This reflects the contents of the IPC flags
-// registers (t2/t3). (All 0 is equivalent to no extra actions performed.)
+// Same as KERN_IPC_REG_ARGS, in bytes.
+#define KERN_IPC_REG_ARGS_SIZE          (KERN_IPC_REG_ARGS * sizeof(size_t))
 
-// Number of register-sized words in the extra message data. This extends the
-// number of bytes that can be transferred per IPC to slightly above 64KB.
-// If the IPC transfers a non-aligned number of bytes, it needs to pad the
-// buffer to the next word boundary, and store the number of logical bytes
-// to transfer in the message itself.
-// For sending: this contains the exact amount of extra units that should be
-// read by the kernel and transferred to the receiver. If the receiver's
-// buffer is smaller, the transfer is cut short, but succeeds, and the
-// receiver is signaled by setting a flag.
-// For receiving: maximum amount of extra units the kernel should copy from
-// a sender. On syscall return, the field is set to the number of copied
-// units. If the sender's count was higher, KERN_FLAG_IPC_MSG_OVERFLOW is
-// set in the flags field.
-// The kernel may abort an IPC operation in the middle, and thus overwrite
-// some of the msg target buffer even on failure and without indication that
-// this happened.
-#define KERN_IPC_MSG_COUNT_SHIFT        0
-#define KERN_IPC_MSG_COUNT_SIZE         8
+// Extended send/receive descriptor. This can be used if more than register-only
+// transfer is needed. If the descriptor pointer is NULL, the behavior is as if
+// all fields are implicitly set to 0.
+// On receive operations, the kernel may modify specific fields. On error, the
+// behavior is unspecified, and the caller should assume that parts were
+// overwritten with bogus data (e.g. if message transfer was aborted in the
+// middle of it).
+// Note: much of this could be "compressed" (such as passing sizes in bitfields
+// in registers). Also there should be mechanisms to extend this struct without
+// breaking ABI (such as having a flags field that can be set to enable later
+// extensions). But let's not for now.
+struct kern_ipc_args {
+    // Send buffer for arbitrary data (i.e. not interpreted by the kernel,
+    // untyped). The size is in bytes. If the receiver does not provide enough
+    // buffer data, the send operation fails.
+    size_t send_size;
+    void *send;
 
-// Number of register-sized words that follow the message data within the
-// extra message data area. The IPC transfer can copy the handles into the
-// receiver's address space as if KERN_FN_COPY_HANDLE were called for them.
-// The receiver's handle values will change. Only up to 255 handles can be
-// transferred.
-// Invalid handles are not allowed and cause an error, except the special
-// value KERN_HANDLE_INVALID is allowed and copied as-is.
-// Otherwise, sending and receiving works like with msg_count. Overflows
-// are flagged with KERN_FLAG_IPC_H_OVERFLOW instead. Overflowing handles
-// are not added to the receiver's handle table.
-// For receiving: note that the first returned handle is written after the
-// last returned msg word, i.e. the start of the handles depends on the
-// number of words returned by the IPC.
-// Concurrency considerations: if the kernel allows other threads to run
-// during the copy (preemptive kernel and/or SMP), userspace may observe
-// handles coming into existence, or getting deleted again on failure. If,
-// in this case, another thread destroy a kernel-created handle, and another
-// handle is allocated in its place, and the IPC operations fails due to
-// another reason later, the kernel will delete this handle anyway while
-// attempting to roll back the IPC operation.
-#define KERN_IPC_HANDLE_COUNT_SHIFT     8
-#define KERN_IPC_HANDLE_COUNT_SIZE      8
+    // Send handle array. This can transfer the given number of kernel handles
+    // to the receiver's address space as if KERN_FN_COPY_HANDLE were called for
+    // them. Like with untyped data, the send operation fails if the receiver
+    // does not provide enough handle slots (recv_num_handles).
+    // The numeric values of the handles will of course be different
+    // Invalid handles are not allowed and cause an error, except the special
+    // value KERN_HANDLE_INVALID is allowed and copied as-is.
+    // If a handle cannot be duplicated (either due to memory allocation failure,
+    // or because a handle does not support duplication), the entire operation
+    // fails.
+    size_t send_num_handles;
+    kern_handle *send_handles;
 
-#define KERN_IPC_FLAGS_MASK             (~(uint64_t)((1 << 16) - 1))
+    // Receive buffer. recv_size_max specifies the maximum amount of bytes the
+    // kernel will copy from the sender to this buffer.
+    // On success the recv_size field is set to the actual number of bytes
+    // that was copied.
+    // The kernel may abort an IPC operation in the middle, and thus overwrite
+    // some of the target buffer even on failure, and without indication that
+    // this happened.
+    // Note: recv_size must be set to 0, as the kernel may not write to this
+    // field if no data was transferred.
+    size_t recv_size_max;
+    size_t recv_size;
+    void *recv;
 
-// Overflow flags; these are set in in the IPC flags if an IPC receive
-// operation successfully returns, but some sender-provided data could not be
-// copied due to the receiver not providing enough space.
-#define KERN_FLAG_IPC_MSG_OVERFLOW      (1 << 16)
-#define KERN_FLAG_IPC_HANDLE_OVERFLOW   (1 << 17)
+    // Receive handle array. recv_num_handles_max specifies the maximum number
+    // of kernel handles that can be received.
+    // On success the recv_num_handles field is set to the actual number of
+    // handles that were copied.
+    // During the transfer, the kernel may incrementally create new user-visible
+    // handles  coming from a receive operation. On failure, it will close them
+    // in an unspecified order.
+    // Note: recv_num_handles must be set to 0, as the kernel may not write to
+    // this field if no handles were transferred.
+    size_t recv_num_handles_max;
+    size_t recv_num_handles;
+    kern_handle *recv_handles;
+};
 
 // Create a new listener port for IPC. The resulting handle can be passed as
 // IPC receive handle, or to create new target ports with

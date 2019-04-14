@@ -7,11 +7,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <libinsanity/minmax.h>
+
+__attribute__((format(printf, 1, 2)))
+int printf(const char *__restrict, ...);
+__attribute__((format(printf, 3, 4)))
+int snprintf(char *__restrict, size_t, const char *__restrict, ...);
 
 // Preliminary way to allocate kernel virtual memory space. Obviously this needs
 // to be replaced by something proper.

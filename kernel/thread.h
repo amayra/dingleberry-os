@@ -136,3 +136,6 @@ void threads_init(void (*boot_handler)(void));
 // Nested use of this is disallowed, and an internal error.
 bool run_trap_pagefaults(uintptr_t ok_lo, uintptr_t ok_hi, void (*fn)(void *),
                          void *fn_ctx);
+
+bool copy_from_user(void *dst, uintptr_t user_src, size_t size);
+bool copy_to_user(uintptr_t user_dst, void *src, size_t size);

@@ -34,20 +34,19 @@ extern struct slob ipc_listener_slob;
 // entry-only values as ipc_entry() extra arguments.
 // Stack-aligned to make stack allocation in the asm easier.
 struct ipc_info {
-    // Receive buffer flags from userspace.
-    size_t recv_flags;
-    // Send/receive buffer pointer from userspace.
-    uintptr_t data_ptr;
+    // Userspace struct kern_ipc_args pointer.
+    uintptr_t args;
+    struct kern_ipc_args args_copy;
     // IPC operation return values (used for syscall exit).
     int ret_code;
     kern_handle ret_handle;
     uintptr_t ret_userdata;
     // Registers directly transferred.
-    size_t payload[8];
+    size_t payload[KERN_IPC_REG_ARGS];
 }  __attribute__((aligned(STACK_ALIGNMENT)));
 
 // Called by ASM on IPC (unless the ASM fast path is taken). thread->ipc_info is
 // set to a stack allocated struct with some syscall parameters; the rest is
 // passed as function argument. Must update thread->ipc_info before return; the
 // caller returns the ipc_info contents via the syscall.
-void ipc_entry(kern_handle send, kern_handle recv, size_t send_flags);
+void ipc_entry(kern_handle send, kern_handle recv);

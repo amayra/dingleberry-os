@@ -13,6 +13,8 @@
 // Reserve entry 0 for freelist.
 static_assert(KERN_HANDLE_INVALID < 1, "");
 
+static_assert(sizeof(struct handle) == (1 << HANDLE_SIZE_LOG), "");
+
 const struct handle_vtable *handle_vtable[HANDLE_TYPE_COUNT] = {
     [HANDLE_TYPE_THREAD] = &handle_thread,
     [HANDLE_TYPE_IPC_LISTENER] = &handle_ipc_listener,
@@ -97,19 +99,26 @@ kern_handle handle_get_id(struct thread *t, struct handle *h)
     return h - &t->handle_table.handles[0];
 }
 
-struct handle *handle_lookup(struct thread *t, kern_handle handle)
+static struct handle *handle_lookup_unchecked(struct thread *t, kern_handle handle)
 {
     if (handle < 0 || handle >= t->handle_table.num_handles)
         return NULL;
 
-    struct handle *h = &t->handle_table.handles[handle];
-    return h->type != HANDLE_TYPE_INVALID && h->type != HANDLE_TYPE_RESERVED
+    return &t->handle_table.handles[handle];
+}
+
+struct handle *handle_lookup(struct thread *t, kern_handle handle)
+{
+    struct handle *h = handle_lookup_unchecked(t, handle);
+    return h && h->type != HANDLE_TYPE_INVALID && h->type != HANDLE_TYPE_RESERVED
            ? h : NULL;
 }
 
-struct handle *handle_lookup_type(struct thread *t, kern_handle handle, enum handle_type type)
+struct handle *handle_lookup_type(struct thread *t, kern_handle handle,
+                                  enum handle_type type)
 {
-    struct handle *h = handle_lookup(t, handle);
+    assert(type != HANDLE_TYPE_INVALID);
+    struct handle *h = handle_lookup_unchecked(t, handle);
     return h && h->type == type ? h : NULL;
 }
 

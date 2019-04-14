@@ -53,14 +53,15 @@ struct handle {
             struct thread *caller;
         } ipc_reply;
 
+        // HANDLE_TYPE_RESERVED
+        // -
+
     } u;
 
     size_t pad0;
 };
 
 #define HANDLE_SIZE_LOG 5
-
-static_assert(sizeof(struct handle) == (1 << HANDLE_SIZE_LOG), "");
 
 struct handle_table {
     struct handle *handles;     // valid in handles[0..num_handles-1].
@@ -82,10 +83,12 @@ kern_handle handle_get_id(struct thread *t, struct handle *h);
 struct handle *handle_lookup(struct thread *t, kern_handle id);
 
 // Lookup a handle by ID and type. Returns NULL if no ID invalid or wrong type.
+// This _does_ work with HANDLE_TYPE_RESERVED as a special case.
 struct handle *handle_lookup_type(struct thread *t, kern_handle id,
                                   enum handle_type type);
 
 // Add an initially invalid handle. Returns NULL if not found.
+// This may invalidate existing handle pointers.
 struct handle *handle_alloc(struct thread *t);
 
 // Free the handle. There is no protection against double frees.
@@ -95,6 +98,7 @@ void handle_free(struct thread *t, struct handle *h);
 // fails, the handle data in *val is unreferenced.
 // *val must have refcount 1 (conceptually).
 // This returns an ID as used in userspace.
+// This calls handle_alloc() and may invalidate handle pointers.
 kern_handle handle_add_or_free(struct thread *t, struct handle *val);
 
 void handle_dump_all(struct thread *t);

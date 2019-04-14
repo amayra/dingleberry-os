@@ -370,6 +370,7 @@ void thread_set_state(struct thread *t, enum thread_state state)
         break;
     case THREAD_STATE_WAIT_SLEEP:
     case THREAD_STATE_WAIT_IPC:
+    case THREAD_STATE_WAIT_IPC_SEND:
     case THREAD_STATE_NO_CONTEXT:
     case THREAD_STATE_FINE:
         break;
@@ -418,6 +419,7 @@ void thread_set_state(struct thread *t, enum thread_state state)
         break;
     case THREAD_STATE_FINE:
     case THREAD_STATE_WAIT_IPC:
+    case THREAD_STATE_WAIT_IPC_SEND:
         break;
     case THREAD_STATE_NO_CONTEXT: // fallthrough: state can't be entered
     default:
@@ -781,3 +783,50 @@ const struct handle_vtable handle_thread = {
     .ref = thread_handle_ref,
     .unref = thread_handle_unref,
 };
+
+struct memcpy_params {
+    void *dst, *src;
+    size_t size;
+};
+
+static void do_copy_user(void *ctx)
+{
+    struct memcpy_params *p = ctx;
+    memcpy(p->dst, p->src, p->size);
+}
+
+static bool copy_user_(void *dst, void *src, size_t size)
+{
+    struct memcpy_params p = {dst, src, size};
+    asm volatile("csrrs zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
+    bool ok = run_trap_pagefaults(0, MMU_ADDRESS_LOWER_MAX, do_copy_user, &p);
+    asm volatile("csrrc zero, sstatus, %0" : : "r" (SSTATUS_SUM) : "memory");
+    return ok;
+}
+
+static bool valid_user_address(uintptr_t user_addr, size_t size)
+{
+    return size <= MMU_ADDRESS_LOWER_MAX &&
+        user_addr <= MMU_ADDRESS_LOWER_MAX + 1 - size;
+}
+
+// Copy from/to userspaces addresses. The user_src address is sanitized, and
+// faults to it are caught. On a fault, false is returned, and *dst might have
+// been partially written to.
+bool copy_from_user(void *dst, uintptr_t user_src, size_t size)
+{
+    if (!valid_user_address(user_src, size))
+        return false;
+    assert((uintptr_t)dst >= KERNEL_SPACE_BASE); // just a kernel code bug
+
+    return copy_user_(dst, (void *)user_src, size);
+}
+
+bool copy_to_user(uintptr_t user_dst, void *src, size_t size)
+{
+    if (!valid_user_address(user_dst, size))
+        return false;
+    assert((uintptr_t)src >= KERNEL_SPACE_BASE); // just a kernel code bug
+
+    return copy_user_((void *)user_dst, src, size);
+}

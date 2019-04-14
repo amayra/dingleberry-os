@@ -40,6 +40,8 @@ MUSL_OBJECTS = crt.o crt_c.o musl_emu.o \
                $(MUSL)/src/thread/vmlock.o \
                $(MUSL)/src/time/clock_gettime.o \
                $(MUSL)/src/time/nanosleep.o \
+               $(MUSL)/src/unistd/sleep.o \
+               $(MUSL)/src/unistd/usleep.o \
                $(MUSL)/src/exit/exit.o \
                $(MUSL)/src/exit/_Exit.o \
 

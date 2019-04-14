@@ -41,7 +41,7 @@ void unused(void) {
     OFFSET(struct thread, trap_pc)
     OFFSET(struct thread, ipc_handle)
     OFFSET(struct thread, ipc_list)
-    OFFSET(struct thread, ipc_free_reply_handle)
+    OFFSET(struct thread, ipc_free_handle)
     OFFSET(struct thread, ipc_info)
     OFFSET(struct thread, mmu_satp)
     OFFSET(struct thread, handle_table.handles)
@@ -69,8 +69,7 @@ void unused(void) {
     OFFSET(struct ipc_listener, listeners)
     OFFSET(struct ipc_listener, waiters)
 
-    OFFSET(struct ipc_info, recv_flags)
-    OFFSET(struct ipc_info, data_ptr)
+    OFFSET(struct ipc_info, args)
     OFFSET(struct ipc_info, ret_code)
     OFFSET(struct ipc_info, ret_handle)
     OFFSET(struct ipc_info, ret_userdata)
