@@ -10,8 +10,8 @@ Blog
 
 In the following sections I'll blog about random crap because nobody cares.
 
-What is OS development
-======================
+What is hobby OS development
+============================
 
 Pointless.
 
@@ -25,6 +25,9 @@ equivalents in userspace on top of the kernel. Or you can focus on operating
 system concepts, for example microkernel vs. something else, or concrete stuff,
 like how to design the filesystem interface. Or you can focus on accessing
 various hardware and implementing drivers.
+
+Note that in academic context it's called "OS research". The main difference is
+that they're paid for it.
 
 There are also parts of OSDEV you can skip over, like implementing a libc.
 Most people will probably not implement a compiler or language, and just use
@@ -40,7 +43,7 @@ unless you're Linus or a mentally ill person (see TempleOS). The main point of
 it is learning, and smugly demonstrating to others that you're able to master
 the low level things.
 
-So this is a learning experience (some use the pejorative "education", not to
+So this is a learning experience (some use the pejorative "education"), not to
 produce something useful. What it _could_ produce by exploring concepts are good
 ideas (some use the pejorative "research").
 
@@ -238,7 +241,7 @@ develop usable microkernels and microkernel based OSes. Absolutely nothing came
 of it. Today, microkernels only have some niche uses, and OSes based on true
 microkernels don't seem to exist. The height of microkernel failure was IBM's
 "Workplace OS", that was a giant money grave and was eventually canceled. In
-summary, they didn't keep their promises.
+summary, microkernels didn't keep their promises.
 
 The microkernel promise
 -----------------------
@@ -258,30 +261,25 @@ and the kernel, the EVIL HACKER could freely access the rest of the kernel (and
 since the kernel is privileged, all of userspace), and basically do anything
 with your system.
 
-A microkernel would have each filesystem into a separate process. Then the bug
-could, in theory, have no impact on your security at all.
+A microkernel OS would put each filesystem into a separate process. Then the bug
+would, in theory, have no impact on your security at all.
 
-Microkernels had about 2 fundamental principles: modularization, and privilege
+Microkernels have about 2 fundamental principles: modularization, and privilege
 separation of modules. They're sort of interconnected: obviously you can't do
-privilege separation with some level of modularization. The "micro" here lies in
-the fact that the kernel should provide the modularization and privilege
+privilege separation without some level of modularization. The "micro" here lies
+in the fact that the kernel should provide the modularization and privilege
 separation mechanism for "server" processes/components _only_, and all the rest
 is done in userspace.
 
 Researchers derived tons of promises from this. For example, microkernel based
 OSes were claimed to be more robust and safer than monolithic OSes, because
-one crashing service wouldn't take down the entire system. Nor would it be
-possible that one service can compromise the security of the whole system.
-
-One of the wildest claims was that a single system could provide multiple OS
-"personalities". So you could run OS/2 (hey it was relevant back then) and Unix
-on the same microkernel, simply because you could implement them as userspace
-components. IBM actually tried this (and guess what, they failed). If you look
-at projects like wine or WinNT Linux emulation, you'll realize that you don't
-really need such a kernel to achieve your goal, as well as the fact that
-implementing an entire OS on top of another one is a "difficult" task.
+one services are isolated, and crashes wouldn't take down the entire system (see
+filesystem example above).
 
 There were some more promises, but this isn't a damn academic paper.
+
+Also note that microkernels did have some success in niches. But microkernel
+_OSes_ did not.
 
 Failure
 -------
@@ -294,7 +292,7 @@ I guess performance in particular killed the appeal of microkernels. I think
 they arrived at the result that microkernel systems are twice as slow as
 traditional system (from my hazy memory).
 
-The reason is that crossing the privilege barrier is expensive. When each
+The reason is that crossing the privilege barrier is expensive. Since each
 service is implemented in its own process, they need to use IPC to communicate
 with each other. IPC needs to enter the kernel, switch address spaces, and
 return control to a different process. This is expensive because it enters slow
@@ -342,7 +340,7 @@ achieve performance and security. Consider the pipe example above (or anything
 else including networking and normal filesystems) - there are tons of complex
 things you could try to optimize them, all which add complexity. How do you
 protect OS services against DoS? How do you protect other userspace OSes from
-misbehaving servers (did you ever deal with a frozen FUSE sshfs on Linux?).
+misbehaving servers (did you ever deal with a frozen FUSE sshfs on Linux)?
 
 I find it important that they really failed to create a fully modularized
 system with _useful_ privilege separation, and instead they usually end up with
@@ -356,6 +354,15 @@ hardware doesn't even allow implementing "unprivileged" drivers, because the
 hardware can access the entire system memory anyway, or there are inherent
 problems like needing to deassert level-triggered interrupts on shared interrupt
 lines.
+
+One of the wildest claims of the microkernel hype was that a single system could
+provide multiple OS "personalities". So you could run OS/2 (hey it was relevant
+back then) and Unix on the same microkernel, simply because you could implement
+them as userspace components. IBM actually tried this (and guess what, they
+failed). If you look at projects like wine or WinNT Linux emulation, you'll
+realize that you don't really need such a kernel to achieve your goal, as well
+as the fact that implementing an entire OS on top of another one is a
+"difficult" task.
 
 In summary, anything is probably always going to be simpler and more efficient
 in monolithic kernels. It's even possible that "logical" security issues (that
@@ -384,14 +391,12 @@ Hybrid kernels (aka even more microkernel failure)
 
 Sometimes there is talk about "hybrid" kernels, that include the best of both
 worlds. But it's really just marketing they used when they wanted a microkernel,
-but had a monolithic kernel. Sometimes, early microkernels (or systems that
-follow early microkernel designs) also deserve to be called "hybrid", because
-they follow some design ideas or concepts of microkernels, but in the end aren't
-true microkernels.
+but had a monolithic kernel.
 
 (On the other hand, maybe this is the right label for attempts to design
 operating systems that try to implement UNIX in a privilege separated manner,
-more of that below.)
+more of that below. Some early microkernels also might have been called hybrid
+kernels, e.g. due to having drivers in the kernel.)
 
 For example, WinNT is occasionally called a hybrid kernel, but it's really not.
 It's a traditional, albeit modular kernel. At some point WinNT even implemented
@@ -400,7 +405,7 @@ early 90ies, where the microkernel hype was at its height, but it was also clear
 that a working OS wouldn't be a microkernel.
 
 Apple OSX (aka macOS and many other confusing spellings) has parts based on Mach
-(well it still sues Mach), but it's really a monolithic kernel that's mostly
+(well it still uses Mach), but it's really a monolithic kernel that's mostly
 FreeBSD. I'm not sure, but it's probably implemented as "co-located FreeBSD
 personality", which is bullshit speak for "awful disgusting chimera of FreeBSD
 and Mach all in the kernel". It seems Mach IPC on that system is mostly used as
@@ -422,13 +427,13 @@ that introduced it was that microkernels were all about modularization all along
 UNIX personality (duh!).
 
 In summary, Apple OSX is a monolithic kernel built upon a microkernel as base.
-Note that Apple tried this before by trying to port Linux to Mach (why did they
-even try this), but failed: http://mklinux.org/graphics/dpenguin.gif
+Note that Apple tried porting Linux to Mach before that (why did they even try
+this), but failed: http://mklinux.org/graphics/dpenguin.gif
 
 Google Fuchsia is a new OS that is called "microkernel" by some. As is typical
 of Google, the only information available is in their repository, although they
 do provide some design docs. There are no papers, no plans, no outside
-involvement. It's just a source dump, and most journalists circle jerking around
+involvement. It's just a source dump, and some journalists circle jerking around
 it get their information from those source dumps. It might be a 1st generation
 microkernel or some variant of a hybrid kernel. It's interesting that it's
 based on an open source project (LK), and that its author was hired by Google
@@ -487,6 +492,11 @@ whole participates in. In summary, their involvement with open source is
 characterized by a certain mostly subtle ruthlessness/inconsideration, that
 doesn't put them into a too good light.
 
+Small projects are often just "grabbed" and essentially hard-forked, without
+anything ever being contributed back. They probably do it if it's convenient.
+(Look into the third_party directory of any Google project. You could probably
+research how much of that software has non-upstreamed patches.)
+
 The second thing from above, providing source code of the projects they develop
 internally. This affects software like Android and Chrome, and of course
 Fuchsia. The truth is, these are not real open source projects. There is no
@@ -505,6 +515,11 @@ expect drive by contributions under these circumstances. It could also be to
 make outside developers to become interested in the technology they're
 developing (interested developers may teach themselves about the technology
 before they're hired, which is obviously very good for the company).
+
+Some people even like Google's source dumps, because it's better than nothing.
+If some Google library or API is undocumented, they may be able to look into
+the source code to find out how to use them. This also helps Google without
+having to invest additional effort.
 
 I think it's really just that Google _knows_ that publishing their source has
 only advantages. The part about being cool is a real thing; just look at
@@ -525,6 +540,14 @@ They will also use their shitty build system to build outside dependencies. It's
 really shitty. Also have you ever used depot_tools? Be relieved if you haven't.
 Google is essentially an ecosystem in itself, that's why it doesn't truly fit
 into the open source ecosystem.
+
+Look at others trying to use Google software. In almost all cases it's pure
+chaos. Google will build stuff for themselves, it doesn't matter whether others
+can use it. This starts at a pretty early and obvious point: the build system
+and deployment. They won't care whether their own changes break other people's
+software or use cases. Using Google software is a high maintenance matter. Also,
+Google maybe have a certain degree of engineer elitism, but there's still plenty
+of room for Google engineers to produce pure crap.
 
 Note that this isn't a black and white thing. Google does contribute useful
 things to community projects, open source Google software can be useful, and
@@ -570,7 +593,7 @@ apparently mostly as some sort of secure hypervisor, with real OSes beneath
 them. These are not "real" microkernel OSes, because of the limited scope of
 their use cases. I suspect the rise of DRM will create actual reasons for
 companies to care about "security", and adding a secure microkernel
-("hypervisor" style) is the easiest way to do it.)
+("hypervisor" style) is the easiest way to do it.
 
 Some projects, especially research or hobby OSes, also claim to be microkernels.
 That's because microkernels are still cool, and at least wrt. research,
@@ -588,11 +611,11 @@ kind of useless.
 What happened instead of microkernels
 -------------------------------------
 
-I think virtualization (virtual machines, containers, etc.) essentially replaced
-microkernels. You want to isolate a process in some way because it could be
-dangerous? Just run an entire OS in a VM! You want to sandbox parts of your
-server? Just use containers! (Well, that's questionable, but it's a typical
-reason given for using such setups.)
+I think virtualization (virtual machines, containers, hypervisors, etc.)
+essentially replaced microkernels. You want to isolate a process in some way
+because it could be dangerous? Just run an entire OS in a VM! You want to
+sandbox parts of your server? Just use containers! (Well, that's questionable,
+but it's a typical reason given for using such setups.)
 
 Apparently there was also progress in general software development that managed
 to tame monolithic kernels: they're no longer crashy pieces of shit (most time).
@@ -618,12 +641,13 @@ encountered), there does seem to be room for this, and the belief that UNIX
 can be efficiently implemented on a, uh, tiny kernel. It all comes down to
 finer grained privilege separation, not microkernels as general purpose kernel.
 
-Microkernels have traditionally been general purpose. The idea is that they
+Microkernels have been traditionally general purpose. The idea is that they
 should be neutral (policy free), so that arbitrary OS mechanisms can be
 implemented on top of it. Once the microkernel is designed and implemented, its
 development is finished, and the rest is up to the OS implemented on top of it.
-The L4 inventor's most central claim that microkernels must be small to be
-efficient (and probably to guarantee other properties).
+The L4 inventor's most central claim was that microkernels must be small to be
+efficient (and probably to guarantee other properties). Policy-freedom was
+somehow critically connected to it (go read his paper if you're interested).
 
 Is it possible that a kernel should really be designed to implement a subset of
 POSIX, or specifically allow implementing POSIX with low overhead? Such a kernel
