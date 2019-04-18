@@ -181,19 +181,21 @@ RISC-V
 RISC-V is a relatively new architecture. It's so new that it's hard to get real
 hardware (not many full featured 64 bit CPUs on the market, forget about PCs).
 It's basically an academic project that is now being commercialized. And maybe
-due to the academic roots, the instruction set is extremely simple, and while
+due to the academic roots, the instruction set is extremely simple. While
 you need to go through hundreds of pages of vendor docs to understand x86 and
 ARM from basic instruction set to kernel mode operation, you can learn all of
-RISC-V in an afternoon or so. Also, while the x86 and ARM docs deal with legacy
-problems, the RISC-V docs are full of enlightenment remarks about ISA design and
-reasons for specific design choices.
+RISC-V in an afternoon or so. Also, while the x86 and ARM docs are full of
+dealing with legacy problems, the RISC-V docs are full of enlightening remarks
+about ISA design and reasons for specific design choices.
 
-Clearly, RISC-V is designed to target embedded and special-purpose applications,
+RISC-V is supposed to scale from embedded to super computers, but it clearly
+focuses on embedded and special-purpose applications rather than "PC" hardware,
 maybe expecting even an even worse fragmented ecosystem than ARM. They expect
 and _encourage_ that vendor add extensions to the ISA for special applications.
 ARM does the opposite (you need a virtually unaffordable "architectural" license
 to make changes to the ISA), and x86 is not available as configurable IP at all.
-But they try to mitigate this by standardizing the CPUI environment. There are
+
+But they try to mitigate this by standardizing the CPU environment. There are
 standard mechanisms for all the messy low level things. Some things are
 abstracted by a well-defined firmware interface (that isn't a horrific
 abomination like EFI, and can even be reimplemented without much trouble).
@@ -202,7 +204,7 @@ By now, toolchains and emulators are widely available and reasonably stable.
 qemu provides full emulation, and gcc/binutils just work.
 
 Thus I highly recommend RISC-V for hobby OS development. Maybe RISC-V makes it
-almost too easy.
+almost too easy, and you miss out on the debugging "fun" x86 or ARM can provide.
 
 My only gripe was with the qemu bootprocess, and the fact that you need to
 provide the RISC-V firmware (OpenSBI) explicitly on the qemu CLI. Also, the
@@ -227,7 +229,7 @@ Clearly the answer is that you should make a "monolithic" kernel. Just try to
 make a small UNIX. Why not a microkernel? They're complex, involve tons of
 design decisions (basically you need to design the entire system before deciding
 on the kernel API, or it won't be very "micro"), and it will take a long time
-until you get something that appear to be doing anything. Consider that real
+until you get something that appears to be doing anything. Consider that real
 microkernel systems don't even exist. Why fall for a hype from the 80ies that
 turned out to be one of the largest failures of computer science research?
 (Well, I'm not a historian, but a multiple decade effort resulting in almost
@@ -638,8 +640,10 @@ What should OS research focus on?
 If you ask me (fortunately nobody does), trying to introduce privilege
 separation. When I talked to Rich Felker (the most UNIX person I've ever
 encountered), there does seem to be room for this, and the belief that UNIX
-can be efficiently implemented on a, uh, tiny kernel. It all comes down to
-finer grained privilege separation, not microkernels as general purpose kernel.
+can be efficiently implemented on a, uh, tiny kernel. (Specifically, he
+challenged my claim that it has to be inefficient - though I'm still skeptic.)
+It all comes down to finer grained privilege separation, not microkernels as
+general purpose kernel.
 
 Microkernels have been traditionally general purpose. The idea is that they
 should be neutral (policy free), so that arbitrary OS mechanisms can be
@@ -655,7 +659,7 @@ would still be relatively small (though probably much larger than a L4 style
 kernel), but would violate the "policy free" property of microkernels. Thus, it
 wouldn't be a microkernel. You'd have to use another label.
 
-Why UNIX? UNIX is the most widespread OS, and it does most things in pretty
+Why UNIX? UNIX is the most widespread OS API, and it does most things in pretty
 straight-forward ways. Everything will have files and file handles. Everything
 needs to implement read() and write(). Take Windows: it's just a very complex
 take on UNIX, with some parts destroying the fundamental elegance of UNIX. (Like
@@ -667,18 +671,21 @@ embedded use cases), and there is no need for microkernels to be truly general.
 
 The real questions are:
 
-    1. Could such a kernel be more efficient than something implemented on top
+    1. How could such a system be designed?
+    2. Could such a kernel be more efficient than a POSIX OS implemented on top
        of a true microkernel?
-    2. Could such a kernel be as efficient as Linux or BSD?
+    3. Could such a kernel be as efficient as Linux or BSD?
 
 The project in this repository is aiming to explore how to implement POSIX in a
-way that leaves most icky POSIX stuff outside of the kernel, so answering these
-question is not really what I'm aiming for. Also, there isn't even a true
-reference for 1.
+way that leaves most icky POSIX stuff outside of the kernel, which in turn was
+provoked by not liking some parts of POSIX, but recognizing the absolute
+pointlessness of coming up with new interfaces. So so answering these questions
+is not really what I'm aiming for, although it might be exploring 1. Also, the
+reference required in 2 does not even exist.
 
 Microkernel research projects partially try to answer the question of "could
 a kernel built on top of a microkernel be as efficient as Linux" (so not really
-1. or 2. from  above), see projects like L4Linux. But note that they do not try
+1 to 3 from  above), see projects like L4Linux. But note that they do not try
 to build _OSes_ on top of microkernels; L4Linux for example still has a kernel
 process that can freely access the entire RAM mapped for L4Linux (including all
 Linux userspace processes).
