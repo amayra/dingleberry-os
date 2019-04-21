@@ -93,68 +93,6 @@ typedef long kern_handle;
 // The thread always gives up its current timeslice. If a send is performed, it
 // is typically donated to the receiving thread.
 //
-// Design decisions:
-//  - Like L4, send/receive are combined for efficiency and to avoid needing
-//    multiple syscalls for a single RPC.
-//  - IPC target ports are handles, which avoids having a global thread ID
-//    address space and associated security and DoS problems; it's also more
-//    convenient, because a handle can store userdata.
-//  - Unlike L4, the blocking direction is always enforced by handles, which
-//    probably simplifies things (doubt).
-//  - "Migrating threads" were considered, but forced control flow is relatively
-//    similar, without the weirdness that comes with it. (In the end, there
-//    are only 2 differences: migrating threads have a "call stack", and
-//    "activations" are essentially user threads without kernel threads.)
-//  - Multiple client threads can make multiple requests through a single port,
-//    that can be handled by multiple server threads. (Every requesting thread
-//    gets blocked. It would be possible to make an orthogonal async-IPC
-//    extension, that takes the slow path and prevents blocking.)
-//    It's supposed to essentially allow server architectures that use thread
-//    pools (multiple threads can communicate independently), as well as single
-//    threaded servers (just create all target ports from a single listener
-//    port).
-//  - This requires dynamic allocation of reply ports. In particular, a server
-//    can let a thread wait while servicing other threads.
-//  - Some weirdness is due to trying to implement an asm-only fast path. This
-//    is also why the ABI is modified: we can copy 7 user registers, and they
-//    could be sourced directly from a C call without further copying.
-//  - No timeouts, because this would require adding a waiting thread to a
-//    timer queue even in the fast path case, which is "too slow". It's also
-//    rarely needed. Instead, a way to interrupt a thread from another thread
-//    shall be provided.
-//  - There is no bulk copying mechanism and no scatter-gather copying (iovec).
-//    I considered this useless, because the receive needs to provide an equally
-//    large buffer for _every_ receiver, and then it needs to do something with
-//    it (copy it somewhere else?). Especially if you assume write() syscalls
-//    are implemented as IPC to a filesystem server, this idea becomes rather
-//    questionable. Things to consider in the future:
-//      - Add a page-aligned iovec that maps the associated pages as COW into
-//        the target address space (as vm_mapping object).
-//      - ...or do the same, but don't map the pages, but put the result into a
-//        vm_object_ref handle.
-//      - The above could also be done with non-aligned memory, in which case
-//        the kernel would copy the data into newly allocated pages.
-//      - ...or relax it further by COWing unaligned pages and "trusting" the
-//        participants that the extra data visible due to it doesn't cause
-//        security issues.
-//      - Don't copy any pages at all, and instead make syscalls like write()
-//        access a vm_object_ref memory object directly. The intention is to
-//        emulate something similar to a monolithic kernel's page cache, and
-//        hope that the FS doesn't need to immediately know that something was
-//        written. Instead, the filesystem code gets active when data is flushed
-//        back to disk.
-//    The main goal is to provide efficient mechanisms to implement filesystems
-//    outside of the kernel, in a somewhat POSIX-compatible way.
-//  - Instead of the above, there's an option to copy a single string, which can
-//    fit into a temporary kernel buffer. This is mostly so that we can do naive
-//    implementations of read()/write() as IPC for now, and don't run out of
-//    space for arguments for complicated RPCs in general.
-//  - Trying to transfer data via registers is probably worthless, depending on
-//    actual overhead incurred by IPC (and register transfer just adds
-//    complexity), on the other hand, even if worthless, it could simplify stub
-//    code, or reduce stub code size (for typical RPC cases).
-// TODO: this wall of text doesn't really belong here.
-//
 // This uses a different ABI from other syscalls. The reason for this is stub
 // efficiency and freeing up registers for IPC transfer. The only common part is
 // that the syscall number is passed in t6.

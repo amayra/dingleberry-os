@@ -357,6 +357,14 @@ hardware can access the entire system memory anyway, or there are inherent
 problems like needing to deassert level-triggered interrupts on shared interrupt
 lines.
 
+Microkernels also were connected to distributed systems. Scientists thought we'd
+have a single OS distributed over multiple network connected computers. One idea
+was that a distributed OS is really the same as a microkernel OS, just that
+network separation is a slightly more radical form of process separation. I
+think we can safely declare these ideas as failed. Nowadays, distributed
+computing means that you can run a bitcoin miner in an unsuspecting user's
+browser.
+
 One of the wildest claims of the microkernel hype was that a single system could
 provide multiple OS "personalities". So you could run OS/2 (hey it was relevant
 back then) and Unix on the same microkernel, simply because you could implement
@@ -380,8 +388,12 @@ IPC really had to be slow. He determined that IPC is inherently slow, but that
 the Mach implementation (and others) was _much_ slower than necessary. He
 created L4, a microkernel optimized for raw IPC. The original L4 (L3) paper is
 kind of an amazing read, because it's so focused on its goal and has good
-results to show for it. It made quite an impact, and apparently all kernels in
-this style are now called 2nd generation microkernels.
+results to show for it:
+
+    http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.26.4581
+
+It made quite an impact, and apparently all kernels in this style are now
+called 2nd generation microkernels.
 
 This didn't really answer how to build microkernel OSes, but it did prove that
 Mach (US/Californian technology) is crap. This sort of confuses me, because
@@ -634,6 +646,24 @@ the day when Linux allows implementing entire filesystems or drivers in BPF,
 just so I can laugh at the world. BPF seems to be mainly abused to circumvent
 the expensive syscall barrier, though.
 
+Are microkernels en-vogue again?
+--------------------------------
+
+Not really, but some things have changed since to 90ies. People are likely more
+accepting of performance reduction for the promise of more security. A remaining
+microkernel promise is that although privilege separation impacts performance,
+it helps with security.
+
+Computer security is an absolutely nonsensical chaotic horror. It's full of
+nightmares like virus scanners and containers, both which reduce performance,
+but which promise some security. Browsers these days use sandboxing by default,
+which reduces performance, but is seen as necessary to isolate millions of lines
+of potentially buggy and exploitable browser code from your system.
+
+Basically, there is a push for creating sandboxed processes for all sorts of
+things. If you did this with basic OS services, you'd have a microkernel. Of
+course you will never reach a true microkernel OS this way.
+
 What should OS research focus on?
 ---------------------------------
 
@@ -689,3 +719,714 @@ a kernel built on top of a microkernel be as efficient as Linux" (so not really
 to build _OSes_ on top of microkernels; L4Linux for example still has a kernel
 process that can freely access the entire RAM mapped for L4Linux (including all
 Linux userspace processes).
+
+But in truth, this is probably all a past thing for OS researchers. All of this
+was already considered, and the proposed idea of looking at high performance
+real world systems AGAIN will probably appear restrictive outdated. They're
+looking at much spiffier things now. And that's why we still use UNIX variants
+(mostly Linux), and (ugh) WinNT.
+
+Read "Systems Software Research is Irrelevant":
+
+    http://doc.cat-v.org/bell_labs/utah2000/utah2000.html
+
+Read it again every other decade. We're (re)making old stuff here!
+
+References and summaries of systems (whether working or proof of concepts) that
+do 1. are missing. Maybe at least Plan 9 deserves a mention.
+
+IPC
+===
+
+IPC enables communication between two processes. Thus its name: Inter Process
+Communication (what a surprise). On UNIX, you get pipes, unix domain sockets,
+shared memory, FUTEXEs (over shared memory), and some other things.
+
+You could build a UNIX system with fine grained privilege separation (e.g. each
+filesystem in a separate process) on top of these mechanisms. Is it possible
+that other IPC mechanisms could improve performance or ease of implementation?
+I have no idea, so let's write down what mechanisms could be considered. An
+academic paper would make this reasonably complete and give performance numbers
+or credible estimates, but this isn't a paper, so there's nothing of that.
+
+My intention is to list some hopefully representative examples.
+
+Basic assumptions
+-----------------
+
+Usually, we want to perform RPC over IPC. RPC (remote procedure call) implies
+sending a message/packet to the other process, and usually waiting on some sort
+of reply. The reply could be asynchronous or optional.
+
+If the messages are small and a reply is required, the overhead of the IPC
+mechanism to send 1 message will matter. If there are small messages without
+reply (or asynchronous replies), multiple messages could be batched, possibly
+reducing IPC overhead. For very large messages, the copying of the message data
+itself likely matters most for performance.
+
+So you can put IPC transfers into 3 categories:
+
+    1. Small messages & synchronous reply => RPC-like
+    2. Small messages & async. or no reply => message batches
+    3. Large messages (with any type of reply) => large transfers
+
+It's possible that you'd implement 3. as 1. or 2. with a different IPC mechanism
+to handle transfer of large payloads.
+
+Shared memory & FUTEXes message transfer
+----------------------------------------
+
+The most primitive, and probably in many cases fastest kind of IPC is shared
+memory. For message transfer, you need to combine this with a synchronization
+and notification mechanism, e.g. mutexes and condition variables. These can be
+done with process shared mutexes (using FUTEXes, this can be almost as simple
+and efficient as process local ones). Usually you'd implement a ring buffer,
+basically reimplementing a UNIX pipe in userspace.
+
+FUTEXes are locking primitives that can be used to implement mutexes and
+condition variables efficiently. In particular, they make expensive kernel
+entry optional in important cases. (FUTEX is the name Linux chose, though the
+concept can be found in other operating systems.)
+
+This requires some level of trust between the two processes. One process could
+always deadlock the other, or write non-sense to the shared memory area and
+corrupt control data, or subvert validation of message data the reader might
+have done in-place.
+
+Advantages:
+
+    - For small messages probably the most efficient mechanism, especially if
+      message batching can be done.
+    - In the best case the number of kernel entries and context switches
+      approaches minimal: Uncontended locks require no kernel entry. A
+      notification through a condition variable will wakeup the other process as
+      soon as the associated mutex is unlocked. When sending a message the
+      reader could immediately start work without further kernel entry. Not sure
+      if the writer could put itself to sleep at the same time as the reader is
+      woken up, or if there's going to be some scheduling overhead.
+
+Disadvantages:
+
+    - Complex communication protocol. It requires defining how to manage the
+      ringbuffer and synchronization. Likely you'd use a shared library for
+      handling the details.
+    - Requires choosing an adequate size for the ring buffer (or have a complex
+      buffer resizing protocol).
+    - Can require up to 3 copies. If one process doesn't trust the other, the
+      data needs to be copied to process-local memory to validate its contents.
+      In the best case you can construct the message directly in the shared
+      memory, and the reader can process it directly, which I consider 1 copy.
+    - Inadequate for large data. Of course large data could be transferred via
+      separate shared memory regions created for this purpose.
+    - Only point-to-point. Having multiple readers/writers would raise
+      complexity and impair performance, or may require creating new shared
+      memory areas for each "connection".
+
+
+Pipes, unix domain sockets
+--------------------------
+
+Pipes transport data over process boundaries using endpoints given by a pair
+of UNIX FDs (file descriptors, process local integer IDs for a conceptual file).
+You write() data to one end, and can read() it from the other. poll() (and
+select() etc.) can be used to check presence of data.
+
+Unix domain sockets are similar to TCP networking, except they're strictly
+local. They use the UNIX connection oriented socket API, so code using it can
+look extremely similar to code using TCP, except nothing will go through the
+network stack. Instead, Unix domain socket connections are more akin to
+bidirectional pipes, and likely as efficient.
+
+Since pipes are byte streams, message framing and parsing is required. Some
+operating systems have hacks to enable message transfers over pipes (I'm
+referring to Linux pipe2() O_DIRECT). Unix domain sockets support proper message
+passing with SOCK_SEQPACKET (there's also SOCK_DGRAM, but that behaves too much
+like UDP).
+
+Advantages:
+
+    - Simple setup, trivial protocol at least with packet oriented streams.
+    - If you use byte oriented streams, you can send and receive multiple
+      messages with 1 syscall (good for message batching).
+    - If you use packet oriented streams, you may be able to invent syscalls
+      that achieve the same (e.g. see Linux sendmmsg()). For receiving it may
+      become tricky to handle large packet sizes (incremental receiving of
+      packets sounds like a mess).
+    - The kernel may apply zero-copy VM tricks when large messages are
+      transferred (such as sharing physical pages as COW).
+    - In the best case, it could work with 1 copy: the message can be
+      constructed anywhere and passed to send() directly (i.e. not counting as
+      a copy), and the kernel could copy this directly to the receive buffer.
+      You can use scatter/gather (iovec) to avoid having to copy different parts
+      of a message into a linear buffer.
+
+Disadvantages:
+
+    - Additional kernel entry is needed to wait for message (poll() call).
+    - Lots of scheduling and syscall overhead: send() + poll() + recv() in a
+      typical message processing loop. But you could introduce "fused" syscalls
+      that minimize kernel entry.
+    - In some designs you may need to provide enough receive buffer for the
+      worst case message size.
+    - You may need to care about the pipe buffer and its effect on performance
+      and system memory usage.
+
+Note that on some OSes, unix domain sockets provide additional features like
+passing FDs from one process to another.
+
+A kernel could either implement the UNIX API directly, or provide a light-weight
+variant of them without UNIX dependencies.
+
+L4 style message passing
+------------------------
+
+Most microkernels provide dedicated message passing primitives, that don't have
+dependencies on UNIX (like pipes/unix domain sockets), and that may optimize
+message passing for performance, and provide additional microkernel features.
+This subsection discusses the L4 variant.
+
+L4 IPC was aggressively optimized for performance. It gets its speed from being
+inherently synchronous and depending only on extremely simple other concepts.
+For example, instead of FDs, which are usually implemented as an index to an
+array of pointers to an internal file structure, as target for the IPC
+operation, a global thread ID is used. The thread ID in turn can be directly
+used to compute the address of the kernel's thread struct.
+
+The IPC operation can perform sending and receiving in 1 syscall. This minimizes
+the number of kernel entries for typical RPCs and message processing loops:
+
+    - A call to a server performs an IPC send operation to the server. The
+      arguments for the same syscall instruct the kernel to switch to receive
+      mode. It sets the server's thread ID as the only allowed sender, in order
+      to receive the server's reply.
+      In the best case (if the server thread is in receive mode, and no error
+      happens), the kernel will switch directly to the server thread. The
+      scheduler does not need to be involved, because the original thread is
+      blocked anyway.
+    - The server gets the caller's thread ID from the IPC syscall, and will
+      use it as sender target when sending the reply. The reply syscall will
+      also instruct the kernel to switch to receive mode (to service further
+      calls from other threads).
+      In the best case (caller still waiting, no other threads want to send
+      anything to the server thread right now), the scheduler will not be
+      involved again.
+      The reply will usually be done with 0 timeout, because the client is
+      assumed to be waiting. Using a higher timeout could DoS the server.
+
+So a call + reply can be performed in 2 syscalls (1 in each thread). The kernel
+needs to access a minimum amount of data structures, and the work is essentially
+reduced to a simple context switch.
+
+L4 message passing further allows copying multiple strings (basically like
+iovec on UNIX), as well as complicated page mapping operations. The latter are
+essential for memory management.
+
+It seems that L4 justifies the relatively complex payload options with the need
+to have a single IPC mechanism, as well as the fact  that the syscall entry and
+address space switching operations are so expensive, that using additional
+syscalls and thus kernel entries would reduce the performance further.
+
+It's not really clear how practical zero-copy copies would be implemented. The
+L4 kernel has no virtual memory subsystem. It only has a mapping database to
+support the IPC page map/grant mechanism, which can be used to implement virtual
+memory. It probably means userspace has to explicitly implement COW, and the
+kernel can _not_ for example transparently turn large string copies into zero-
+copy COW'ed pages.
+
+The exact details are probably best taken from various L4 papers and manuals,
+since I wrote most of this out of my memory. There are many L4 variants too,
+which slightly change the API around (minor details like platform specifics or
+making the API portable, and major things like security).
+
+Advantages:
+
+    - You probably need this design to reach the lower bounds on syscall
+      performance. Small calls can even be done in registers only, without
+      transfers.
+    - It's simple to implement.
+
+Disadvantages:
+
+    - Global thread IDs could leak tons of internal information about the kernel
+      and the OS.
+    - Access control needs to be implemented in userspace, since anyone can send
+      IPC to anyone (attackers could even guess thread IDs). The "clans & chiefs"
+      concept provided some coarse control, but it sucked.
+    - Connection management must be implemented in userspace. You need to verify
+      which rights a new unknown sender thread ID has.
+    - Load balancing must be implemented in userspace. A thread can't just wait
+      as proxy for another thread, so doing multithreaded servers is hard.
+    - All in all there is non-trivial work to be done in userspace.
+    - Very "tight" IPC syscall arguments, likely needs a stub generator for
+      comfortable use, especially if you want to use the message buffer for
+      payload data.
+    - It seems it's implied that string copy source/destination are always in
+      present pages; it's not clear what happens if they need to be paged in
+      first (this is important for usability and whether clients can block
+      servers via the pager).
+    - Requires a protocol on top of it for message batching.
+
+The primitiveness of the IPC means usually you will need to implement several
+features that other IPC mechanisms like unix domain sockets provide normally.
+Some of them look rather tricky: load balancing would require knowing a list
+of server thread IDs (and then trying them all until one works?), access control
+gets into trouble if a client creates a new thread and then makes a server call
+from it (does the server need to ask some kind of management server to which
+process the new unknown thread ID belongs to?).
+
+It's notable that there was a project to port Hurd to L4. They gave up in the
+early stages. I don't know why; maybe the primitive IPC mechanism created too
+much complexity, and they started considering other L4 variants and kernels.
+(This is not an academic paper, so vague hearsay from hazy memory and unfounded
+speculation is fine.)
+
+In my own lowly opinion, this focuses too much on raw IPC performance and
+benchmarks, while a complete multiserver system may actually suffer from some of
+the design choices.
+
+Mach style message passing
+--------------------------
+
+Not fully describing it here, go read some paper.
+
+It seems they provide something akin to a light-weight variant of unix domain
+sockets multiplexed into one syscall (very broadly speaking). Instead of UNIX
+FDs, it uses "ports" as target (similar to FDs, but refer to IPC targets). Ports
+can be transferred via IPC. Call/reply idioms are supported. Copies may be
+optimized with COW, and there are features for explicitly transferring pages of
+memory to the receiver. The low level API seems sort of annoying, though.
+
+See e.g.:
+
+    https://www.gnu.org/software/hurd/gnumach-doc/Mach-Message-Call.html
+    https://web.mit.edu/darwin/src/modules/xnu/osfmk/man/mach_msg.html
+
+There are multiple versions of Mach, which might matter, so care should be taken
+when looking at random web resources. (I seem to remember that OSFMK/XNU/OSX is
+based on an older Mach iteration.)
+
+Thread migrating IPC
+--------------------
+
+Mach IPC was slow. One (apparently somewhat successful) optimization (based on
+earlier research) is thread migrating IPC. The idea is that instead of passing
+a message from thread to thread, the message should be processed in the sender
+thread. The thread will be migrated to the target process (changing address
+space, and necessarily the stack), continue executing there, and return to the
+caller process when sending the reply.
+
+It's not clear why this is faster. Maybe Mach had severe overhead in specific
+areas such as scheduling. The new mechanism also enforces synchronous IPC. It
+requires "activations", essentially a free list of userspace stacks, so
+arbitrary caller threads can come into existence in target processes. These are
+almost like pre-created user threads without kernel threads. It seems from the
+Mach perspective, activations are just light-weight target threads, which
+dramatically increase performance due to excessive inefficiency when handling
+normal threads.
+
+In conclusion, this is somewhat similar to normal message passing, instead of
+popping a waiter thread from a port's wait list and switching to it, you pop an
+activation and switch only the user thread.
+
+Advantages (relative to normal message passing):
+
+    - Enforces synchronous IPC.
+    - May reduce the number of kernel threads (and save memory and caches at
+      least), and reduces kernel thread context switches.
+    - Nothing?
+
+Disadvantages:
+
+    - Needs to maintain a kernel migration "stack" of processes a thread
+      migrated though.
+    - Very rigid and enforces the call/reply idiom.
+    - Weird problems due to not being able to return control to a caller thread
+      without aborting all calls: what if a UNIX signal happens in the caller
+      thread? What if one process in the migration stack gets killed? This may
+      be too inflexible.
+
+Kernel command ringbuffer
+-------------------------
+
+As claimed further up in this blog, shared memory is the most efficient manner
+of communication if you want small batched messages. Unfortunately, there are
+also security issues. The main reason for the speed is (possibly) reduced
+copying, and reduced kernel entry.
+
+Instead of shared memory, you could setup a ring buffer that is read and
+"interpreted" by the kernel. The kernel, once notified, would read the buffer,
+and perform the operations that were written to it (a concept that's constantly
+reused, see e.g. https://lwn.net/Articles/776703/).
+
+This could for example be a list IPC operations. You could batch messages this
+way, even if the individual calls are traditional single-message calls. Since
+the kernel interprets this, the commands can have argument pointers to arbitrary
+other memory outside of the command buffer.
+
+memfd (large memory transfers)
+------------------------------
+
+Linux memfds are UNIX file handles to a shared memory area. This shared memory
+does not have to be mapped anywhere (not does it need to be in /dev/shm/), but
+can be mapped by using mmap() on the FD.
+
+Classic fbufs also seem related. dmabuf is a similar Linux mechanism, but
+apparently for physical memory.
+
+Most importantly, a memfd can be made read-only, and you can send it over unix
+domain sockets. This is interesting for zero-copy transfers of large data.
+Unlike with zero-copy copy optimizations and explicit memory management (like L4
+and Mach provide them), this does not necessarily involve manipulation of page
+table entries and TLB flushing, which makes it an interesting concept in
+general.
+
+Discussion
+----------
+
+What is there to discuss? It's not a paper.
+
+My own thoughts and taste is reflected in the section below.
+
+IPC implementation
+==================
+
+Coming up with IPC requires a bunch of annoying design decisions. Not only does
+the concept and the API need to be decided. You also need to have an idea how
+to efficiently and easily implement it, and its impact on the overall OS design.
+The purpose of the IPC is to be useful. All aspects need to be considered
+together.
+
+If nothing else, this section documents my train of thoughts, and how I arrived
+at the garbage in this repository. For myself, this is always a balance between
+spiffy crackpot ideas that are useless in practice (in my honest opinion), and
+the simple, reasonable, efficient thing, but which are kind of boring.
+
+Special IPC abstractions instead of UNIX read/write
+---------------------------------------------------
+
+I'm going to create separate microkernel style kernel abstractions for IPC,
+instead of making the kernel support unix domain sockets directly. This gives
+more freedom experimenting with IPC designs and doesn't require pipe buffers in
+the kernel.
+
+Unix domain sockets could just be implemented on top of this IPC mechanism.
+Although it's somewhat likely that won't work. You probably need a kernel ring-
+buffer  to provide all expected semantics, which the IPC won't provide. Well,
+whatever.
+
+This probably also means there won't be a VFS layer in the kernel.
+
+Combining send/receive
+----------------------
+
+To reduce kernel entry overhead, sending and receiving should be possible in
+one operation. This also avoids scheduler overhead in the best case.
+
+In a broader sense, batching multiple syscalls or IPC operations into one kernel
+entry may be useful, but that is hard to use with the anticipated use case of
+implementing RPC (need to wait for a reply on each send), and could be premature
+or just useless optimization. On the other hand, combining send/receive is the
+minimum you can do, and it's easy to do.
+
+IPC port abstraction
+--------------------
+
+IPC endpoints are denoted by process-local identifiers similar to UNIX FDs. They
+can be transported over IPC themselves. Compare to L4 this requires an
+indirection through a lookup table.
+
+(In an earlier experiment, I tried to put this table at a fixed kernel address
+that are process specific (MMU_FLAG_PS), but it was obnoxious to deal with, and
+likely wastes TLBs.)
+
+(The kernel won't have global identifiers. Although note that implementing
+process-shared locking primitives based on FUTEXes need globally unique thread
+IDs anyway. So the UNIX server (ugh) will probably generate these numbers and
+pass them to the threads it manages. Stupid.)
+
+In addition, these port handles can store a user data pointer for the server.
+The server can use this to avoid an additional lookup. In fact, the IPC receive
+operation returns only the userdata used at port creation, not a port handle.
+
+I'm hardcoding IPC to enforce "call" semantics into one direction (sending a
+message through a port, and waiting for a reply). There are 3 types of ports:
+
+    1. Listener ports. They are for servers. You can receive from them only.
+    2. Client ports. They are created from listener ports. You can send from
+       them only, but you can wait and receive a reply as part of the send
+       process. Client ports are created by the server. They are created from a
+       listener port, and take a server userdata value as argument.
+       Client ports are sent to a client, which can use it to send messages to
+       a server.
+    3. Reply ports. They are temporarily created when a server receives a
+       message from a client, and are used to send a reply.
+
+At least client ports can be freely sent to other processes. fork() or UNIX FD
+passing may rely on this.
+
+It goes something like this:
+
+::
+
+            Server                          Client
+           --------                        --------
+
+        - create listener port
+        - create client port
+          (listener port and userdata
+           as arguments)
+        - send port to client (through
+          pre-established means)
+                                        - receive port
+                                        - send message to port, wait for reply
+        - start receiving from listener
+          port
+        - receive message from client
+          - this creates a temporary       ... client wais ...
+            reply port
+          - and returns the userdata to
+            the server
+
+           ... server works ...
+
+        - server sends reply by sending
+          to the reply port
+                                        - client receives reply
+
+
+Clearly this is meant for RPC. Possibly too inflexible in general. It also
+requires an asymmetric IPC implementation: different code for "calls" and
+"replies".
+
+Port revocation?
+----------------
+
+A capability based system would offer a way to revoke a port (so a client can't
+use it anymore to send or receive message through it). Revocation would require
+tracking all ports created from an original port, which is kind of annoying as
+an implementation without that seems simpler and more efficient. A server could
+in theory just reject requests from a "revoked" port instead.
+
+Multiple waiter/sender threads
+------------------------------
+
+Multiple threads shall be able to wait on a single listener port. This trivially
+enables multithreaded servers. (In fact, it looks like a server would only
+create one listener port ever, and just fire up multiple worker threads to wait
+on it.) Without this, it'd be awkward to balance client ports over multiple
+threads dynamically.
+
+Multiple threads shall be able to send to the same client port, independently.
+You can access a single FD in UNIX concurrently (at least if you use pread and
+pwrite), and the same shall be possible with IPC ports. This requires client
+ports to be stateless, and necessitates dynamic creation of reply ports.
+
+Dynamic creation of reply ports
+-------------------------------
+
+Reply ports are created when a client sends to a server, and destroyed when a
+reply is sent through them. I see this as only way to support multiple sender
+and receivers through a single client port. Fortunately, allocating and freeing
+reply ports should be fast, and can be further sped up by caching reply ports
+per listener thread.
+
+Migrating threads? Not even going to try it.
+--------------------------------------------
+
+Implementing migrating threads requires creating "activations", which are really
+just userspace threads without kernel thread. To interact nicely with the libc,
+you'd need to create a normal userspace thread, and then destroy the kernel
+thread separately.
+
+The fact that you can't just cancel an ongoing RPC would probably cause some
+major headaches.
+
+Conceptually, migrating threads are somewhat attractive and simple. But in fact
+L4 style synchronous message passing is probably as fast and simple.
+
+ASM-only fast path and register-only message passing
+----------------------------------------------------
+
+As part of the experiment, there shall be a fast path, and the possibility to
+transfer messages through registers only. This is probably worthless.
+
+Transferring parts of the message through registers complicates stub code and
+probably necessitates a complicated stub generator. You could create a userspace
+wrapper, that puts the start of a message into the registers, this would be much
+slower than just having the kernel copying everything directly. Even if you do
+have a stub generator, it might not matter.
+
+The ASM fast path is supposed to prove that the IPC mechanism can be implemented
+efficiently. The current (untested) implementation can actually transfer 8
+registers without touching them at all. (Not that hard considering RISC-V has 31
+general purpose registers.)
+
+This causes lots of weirdness and is pointless since I
+
+    1. Don't want to have stub generators.
+    2. Am not going to make performance measurements or further experiments to
+       prove whether IPC is really fast.
+
+I hope I can bring myself to remove this.
+
+Timeouts?
+---------
+
+Not having timeouts in the IPC operations seems to enable a more efficient and
+simple implementation. Timeouts are probably rarely going to be needed. The
+alternative is to create a syscall that can interrupt a waiting thread (UNIX
+signal emulation would probably require something similar anyway). Then timeouts
+can be done with a separate watchdog thread.
+
+Complicated copying methods?
+----------------------------
+
+I have my doubts whether these are really useful. Normally you'd use other
+methods for passing large quantities of data, like memfd.
+
+I'll argue that iovec style copying as well as zero-copy optimizations could be
+skipped. Instead, they should be implemented for memfds.
+
+IPC implementation, alternative take
+====================================
+
+What if we directly simulate unix domain sockets instead? You can choose on a
+spectrum from basically using POSIX semantics, to a vaguely similar mechanism
+like Mach message passing (in the broadest sense all of them are asynchronous
+connection and packet oriented transports with a kernel message queue).
+
+The idea here is:
+
+    1. Have a "connection" (socket FD) between each client and server.
+    2. Client and server can freely send messages in either direction.
+    3. Concept how to handle notification/waiting with minimized kernel entry.
+    4. Connection creation is out of scope.
+
+Optionally, this could be without a kernel buffer, but it would break poll().
+You'd need synchronous "rendezvous" of 2 threads to perform a transfer, and
+poll() cannot signal this condition.
+
+Central to getting efficient IPC (premature optimization again...) is that you
+can multiplex all these calls into one:
+
+    1. Send operation at the start of the call
+    2. Listening to multiple connections at once (kqueue()) afterward
+    3. If a connection becomes ready, reading from it and returning
+
+Something like::
+
+    int listener = sys_create_listener();
+    sys_listener_add_connection(listener, conn1, userdata1);
+    sys_listener_add_connection(listener, conn2, userdata2);
+    // ...
+    while (1) {
+        sys_msg next_to_send[];
+        sys_msg next_received[];
+        int num_send = ..., num_receive = ...;
+        sys_ipc(&next_received, num_receive, &next_to_send, num_send, listener);
+        if (next_received.valid) {
+            void *userdata = next_received.userdata; // userdata1 or ...2
+            ...
+        }
+    }
+
+Maybe? It merges sendmmsg(), kqueue(), recvmmsg() (yes these are all Linux and
+BSD specific, not POSIX).
+
+A sender could do something similar for the call idiom (send/wait/receive).
+
+TODO: add good ideas here
+
+Implementing file access
+========================
+
+Filesystems shall be outside of the kernel, in separate processes. A naive
+implementation would turn all write()/read() calls into RPCs. This would
+probably be inefficient due to switching address space and twice the number
+of kernel entries caused by IPC.
+
+It looks like it's best if the kernel has a virtual memory subsystem, and
+files are represented as kernel objects. Let's call them memobjs. Memobjs do not
+have actual read/write entrypoints. Instead, they're a sparse linear memory
+region comprised of pages, and read/write syscalls access this memory region. If
+a page is not present, the actual filesystem is notified, and adds the page to
+the memobj. If system memory gets full, or the file is flushed, the actual
+filesystem is notified, and starts writing back pages marked as dirty.
+
+Similar mechanisms have existed before (memfd, fbuf, maybe Mach VM stuff).
+
+Special files (like network sockets, device files, /proc/, etc.) can't be
+implemented with this and would need alternative mechanisms. Thus the memobj
+file-like syscalls won't become the canonical file access syscalls. Rather,
+userspace will need to switch between methods depending on the type of the file.
+
+memobj API
+----------
+
+Such a memobj object requires the following mechanisms:
+
+    1. read/write/mmap/truncate APIs, that vaguely work like POSIX.
+    2. And probably also lseek() because even though it's annoying, you won't
+       emulate that in userspace. The file position can't be in the memobj
+       directly, and it can't be in the FD either. Instead it must be in an
+       additional object referencing it, possibly together with file access
+       rights.
+    3. A notification mechanism from memobj to FS server when a user accesses a
+       missing page.
+    4. A way to query dirty/accessed bits for each page from the memobj. The FS
+       server uses this to manage its cache and to decide whether pages need to
+       be written back.
+    5. Specifically the FS server needs ways to atomically read/write pages from
+       the memobj. For example, if the FS server writes back a dirty page, it
+       must be ensured that concurrent write operations to the page by clients
+       are handled in a meaningful manner. This includes an operation to remove
+       pages from the memobj. Some of these could probably be controlled with
+       specific read/write flags, gated by special FS server access rights.
+    6. If it's intended that FS servers can read/write to a memobj page in-place
+       (e.g. via DMA), a page locking mechanism is needed. On the other hand,
+       maybe "transferring" a full page is sufficient.
+
+Note that read/write can apply COW zero-copy tricks, and can just move pages
+from/to the kernel internal object. In particular, the filesystem implementation
+
+In the worst case, this would be slower than straight read/write RPCs. Consider
+accesses which filly read/write files. On the other hand, it likely simplifies
+some aspects of the system (implementing mmap() becomes trivial), and handling
+of system memory pressure (maybe).
+
+FS server implementation details for opened files
+-------------------------------------------------
+
+Opened files simply exist as membufs, nothing further. They are maintained by
+the FS server, and clients have less privileged references to it.
+
+On the example of the FS server wanting to flush a page to disk:
+
+    - The FS server queries a list of dirty pages from the memobj, and decides
+      to write one of them to disk.
+    - It uses read() on the memobj, with a special "reset dirty bit" flag.
+    - The read() is page aligned, and the MMU code simply rewrites the memobj
+      page a COW inplace of the destination buffer.
+    - The dirty bit is reset atomically.
+    - The read() call returns, and the FS server passes it to the disk driver
+      code (or whatever).
+
+An alternative implementation would mmap() the membuf, invoke a special page
+lock operation to block access for anyone but the FS server, and then pass the
+address of the mmap'ed page to the disk driver code.
+
+A read operation would work roughly similar:
+
+    - The FS server receives a notification from the kernel that a page was
+      requested by a memobj user. (The notification may use IPC or such, but
+      the originator is the kernel's memobj code.)
+    - The FS server reads the page by calling the disk driver,
+    - and then uses write() on the memobj to transfer the page to the memobj's
+      internal buffer (this ideally uses zero-copy).
+    - The client probably wakes up due to the kernel code snooping the write.
+
+ftruncate() calls would simply resize the membuf internal buffer. But the FS
+server probably needs to be notified of this in some way. To a lesser degree
+the FS server would probably also want to know when access/dirty bits are set
+in order to update file times. Not sure if all these things could reasonably be
+done if the FS server is forced to poll.
