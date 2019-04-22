@@ -467,6 +467,7 @@ toxic to the open source ecosystem. There are 2 things they do:
     1. Participating in development of open source software they do not "own"
     2. Provide as much source code of their software as they can in public,
        repositories (including history, often accepting 3rd party patches),
+    3. Participate in open standards development and The Web(tm).
 
 There is nothing wrong with that, except the way how they do this.
 
@@ -585,6 +586,65 @@ they dislike GPL if they open source everything they own anyway? The only reason
 I can come up with is because they don't essentially own it, like they do with
 BSD licensed stuff. Maybe additional "duties" attached to the license makes
 their management nervous, and they used GPL projects out of pure necessity.)
+
+Last but not least...
+
+What about participating in open standards? Just recently, Google tried to free
+us from the grip of the HEVC patent trolls, and created the AOM association.
+
+HEVC is the successor of h264, the most important video codec. The x264 open
+source implementation and the piracy scene associated with it showed how
+efficient it could be. Digital video didn't have to be postage-stamp sized eye
+cancer to be watched through proprietary garbage software. (Who remembers
+RealPlayer? Better don't.) HEVC is supposed to be an important improvement over
+h264 (especially for 4K and HDR, both buzzwords that won't actually improve
+video quality one bit). Now, Google regrettably forced VP8 on the world (a bad
+codec essentially retrieved from the Flash plugin), to avoid having to pay h264
+licensing fees. VP8 was crap, so they created VP9 - a much better codec, which
+mostly failed due to the Google encoder engineers being plain incompetent, and
+for being a Google-only project with all the associated inconveniences for
+outsiders (see above, Google doesn't make it easy to use their software).
+Eventually they created AOM.
+
+AOM is a consortium of multiple companies trying to create a patent free video
+codec. The main focus was to create something as good as HEVC, but without
+having to pay royalties to multiple patent trolls who are holding HEVC hostage.
+(Like someone said, MPEG-LA, the licensing company managing payments for h264
+and HEVC "flew too close to the sun".) This video codec is AV1.
+
+And guess what, there's so much Google engineering involved that some...
+observers are utterly disappointed with it. Especially relative to what they
+expected from Daala and Thor, earlier non-Google video research projects that
+later joined AOM for AV1. The AOM "reference" encoder and decoder is crap.
+Turns out these tools are just based on libvpx, the tools for Google's VP8 and
+VP9. With all the consequences.
+
+(When VideoLan started work on an actually good decoder, dav1d, Google
+apparently reacted salty at first. Later they funded and started to use it,
+ though.)
+
+Regarding the codec standardization itself, word has it that Google applied
+different standard to their contributions and that of others. Google's stuff was
+often developed internally, and then just dumped to the normal AOM development
+process (and sometimes apparently just pushed to git circumventing the normal
+review process). On the other hand, other contributors had to go through
+convoluted review and test procedures. It's clear that Google just used their
+weight. It became a Google project, instead of the community project some hoped
+for.
+
+Another interesting thing is what Google did to WebAssembly. (Just a thing I've
+stumbled over randomly.) You can read about it here:
+
+    http://troubles.md/posts/why-do-we-need-the-relooper-algorithm-again/
+
+In summary, Google made sure WebAssembly would produce output that V8 (their
+JavaScript engine) could use efficiently, while it would suck for everyone else.
+Specifically, compiler need to bend upside down to produce web assembly, because
+Google is ignoring a particular concept that has dominated compiler research for
+decades. Google just ruthlessly forced their own bad shit one everyone so they
+didn't have to move.
+
+Nice company.
 
 Microkernels today
 ------------------
@@ -1335,6 +1395,31 @@ BSD specific, not POSIX).
 
 A sender could do something similar for the call idiom (send/wait/receive).
 
+Bad: multiple threads have a hard time to send requests to the server
+concurrently if the connection is truly shared. On the other hand, there's no
+easy way to "duplicate" the connection. Even added such a mechanism (which could
+be used to implement dup()), there's still the question how to handle concurrent
+accesses to the same FD: e.g. two threads calling read() and stat() on a FD,
+how are the replies correctly routed? One could introduce a "sub stream
+selection ID" that the server would use to distinguish them, but that's not a
+very elegant addition on top of the POSIX semantics. There is no way to "lock"
+the connection while waiting for the server reply either.
+
+In addition, there is the question how simple FS calls should be serialized over
+the connection. UNIX itself has no concept of transferring calls like seek or
+truncate over network connection. Even plain sendmsg() calls involve pretty
+complicated features, where it's questionable how exactly to pass it to the
+receiver. So you'd need to do something "special" on the receiver side. An
+obvious idea would be translating these calls into messages with a standard
+format (isn't that what Plan 9 does?), but then what decides whether it works
+like a socket, or whether it magically translates calls?
+
+It sounds simpler to have an IPC mechanism an abstraction layer below unix
+domain sockets. Trying to use unix domain sockets directly for this layer
+probably sucks. My idea to have a lower level IPC mechanism to automatically
+add a temporary reply port to send the reply to the correct caller seems
+therefore more attractive to me.
+
 TODO: add good ideas here
 
 Implementing file access
@@ -1430,3 +1515,155 @@ server probably needs to be notified of this in some way. To a lesser degree
 the FS server would probably also want to know when access/dirty bits are set
 in order to update file times. Not sure if all these things could reasonably be
 done if the FS server is forced to poll.
+
+Implementing pipes and unix domain sockets
+==========================================
+
+My proposed native IPC mechanism (synchronous message passing) is unsuited for
+implementing pipes directly between two processes. You could use a "pipe server"
+that shuffles data between two processes, but that's slow and complex, so such
+an approach won't be considered.
+
+What makes pipes tricky is that:
+
+    1. They have an internal buffer, so they can be asynchronous.
+    2. Non-blocking access is possible, and a misbehaving client cannot block
+       a carefully designed server, and the same is true the other way around.
+    3. Needs to support things like poll() too.
+
+Synchronous message passing inherently requires the two processes to cooperate
+(not possible because they may not trust each other), or a third party between
+them (I've rejected this kind of implementation). Consequently, it looks like
+this needs to be implemented in the kernel.
+
+Could it be implemented in userspace without a "pape server"? Maybe. You could
+create a shared memory buffer (tricky to make safe and DoS-free), or you could
+create separate "transfer" threads per pipe. The latter would perform the
+transfer from a buffer in the sender address space when the receiver wants to
+read. But in addition to high overhead, it'd probably be rather hard to provide
+all POSIX semantics. For example, multiple processes can write to a pipe or read
+from it.
+
+For an in-kernel implementation, quite possibly a variation of membuf could be
+used, which may help to reduce duplication of APIs and implementation. But this
+question remains unanswered.
+
+Descent 2 custom level reviews
+==============================
+
+Descent 2 may be an old game, but it's still fun to play. Things that
+facilitated this is that it's open source (restrictive license, but still), and
+the availability of a large number of custom missions. Most missions consist of
+only 1 level (and a sizable number are just multi-player battle arenas), but
+some missions are large and rival or surpass the original game.
+
+Of course you still need the original game data to play them.
+
+All of the missions below are single-player. They are in no specific order.
+
+The Entropy Experiment
+----------------------
+
+A simple 4 level mission. Nothing amazing, but I think it has quite good level
+design and robust Descent-like gameplay. I especially like level 3. Level 4 on
+the other hand is dragged down by adding some weird robots, and the end level
+boss.
+
+Descent: The Enemy Within
+-------------------------
+
+Pretty good and large (26 levels) mission. Creative diversity of level designs.
+It uses custom bots exclusively, but doesn't suffer from it. Notable high points
+include level 15 (pretty well suited to play standalone), level 19 (includes a
+tricky secret level), level 23, and level 26 (the last level). Maybe level 25
+is a bit too hard and it's regrettable that level 26 doesn't come before it.
+The boss robot in level 25 in it is pretty mean; be aware that it is partly
+invulnerable like the last boss of the D2 default mission. Not sure if it's
+possible to beat the level 26 boss. Level 9 has 1 or 2 rooms that will make you
+think "I didn't know the D2 engine could do this".
+
+Descent: Die Hard / Fight For Your Life
+---------------------------------------
+
+These are 2 big missions with 19 and 27 levels each. They are by the same author
+and quite similar. These levels modify the usual gameplay a bit: you get a LOT
+of weapons and can throw them at a LOT of robots. Usually, Descent tries to make
+it hard by making powerful weapons scarce. Don't worry about that here. There
+are probably more missiles and Vulcan ammo than you can use. Earthshaker
+missiles are everywhere. Rather than solving puzzles, the levels are mostly
+about creating explosions. There are some interesting traps as well. It's pretty
+fun. Also a warning: it's best to keep a savegame of the level start. Sometimes
+there are inescapable situations or bugs that trap you in closed sections.
+
+The level count is in part inflated by the number of boss arena levels. These
+are relatively simply levels with huge spaces and multiple boss robots. The
+latter is not really something supported by the game (there is a normally
+disabled Assert() against multiple bosses), but it sort of works in a glitchy
+way. As a consequence you only need to beat one of the bosses, and the others
+will enter "death roll" as well. Normally I hate boss fights, but since you can
+just pick the easiest boss it's not so bad.
+
+EQ's Sesame Set
+---------------
+
+This is apparently a loose collection of 12 unrelated levels. The levels range
+from sort of boring (sorry) to extremely interesting. Level 1 starts with a
+really weird design: it's just one extremely big block (technically 2 segments
+I think) where a large number of robots are placed. Level 3 is an interesting
+puzzle, just that the level designer apparently forgot to place robots (?),
+and there's only a reactor and lots of weapons that can't be used. But the
+puzzles are very hard (inescapable traps at some points). Level 8 is one of
+my favorite levels, because it's so strange. Level 9 continues aspects of the
+level 8 level design, and add a load of strangeness on top of it. Both level 8
+and 9 are very strange (what's up with these textures?), large, at times
+puzzling. They're so good that levels 10-12 are unfortunately disappointing. In
+any case, worth playing.
+
+Plutionian Shores
+-----------------
+
+30 levels, relatively standard, but good. Apparently quite recently released.
+It's nice that there are still people making large missions 20 years after the
+game has been released. (Two fucking decades!) A bit annoying that you have
+Ammo rack and Gauss canon only by level 15 (and the level sure makes you work
+for it - you have to take a detour into the fancy secret level).
+
+Descent 1: The Lost Levels
+--------------------------
+
+A nice long mission (24 levels). Not sure why it has "Descent 1" in the title.
+Technically, it's a D2 mission, and uses plenty of D2 robots (but also D1 robots
+and custom ones). It's mostly normal D2 level design and gameplay. My only
+complaint is that it's too hard in the earlier levels while it becomes too easy
+later on. (On "Ace" difficulty level I needed to save & restore all the time in
+the early levels. On "Hotshot", it was too easy and boring in the later levels.)
+
+Saturn
+------
+
+6 levels, but at times quite amazing level design. The tunnel in level 3 is so
+interesting, and level 5 has one of the best "outdoor" levels I've seen. Some
+hard puzzles.
+
+Brat's Maze
+-----------
+
+No idea who Brat is. This is a 5 level D1 mission (D2 can load it anyway). I
+think level 2 and 5 are pretty amazing. Level 2 for its well-made hectic game
+play on small space, and level 5 for its visual design (it's boring otherwise).
+The other levels are just OK. The whole thing is worth playing.
+
+Jonadab's Domain
+----------------
+
+No idea who Jonadab is. This is a D1 mission again, with 11 levels. This is
+an "experimental" mission, with small but interesting levels, to the point of
+using engine glitches. The unusual ideas and level design make it interesting.
+
+Descent 2: First Strike
+-----------------------
+
+This is apparently a conversion of the Descent 1 single-player mission. It has
+been "spiked" up with D2 features and robots. (There's another Descent 1
+conversion mission that is apparently truer to Descent 1.) Even the level design
+is enhanced in some places with additional tunnels. Can be recommended.
